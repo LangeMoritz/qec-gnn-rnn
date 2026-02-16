@@ -7,7 +7,6 @@ Plots logical error rate P_L vs rounds on a log-log scale, with
 Usage:
     python examples/test_nn.py --d 3 --p 0.001 \
         --model_last models/d3_last.pt \
-        --model_error_chain models/d3_ec.pt \
         --model_mpp models/d3_mpp.pt
 
     # Quick sanity check:
@@ -61,8 +60,6 @@ def main():
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument("--model_last", type=str, default=None,
                         help="Path to model trained with label_mode=last")
-    parser.add_argument("--model_error_chain", type=str, default=None,
-                        help="Path to model trained with label_mode=error_chain")
     parser.add_argument("--model_mpp", type=str, default=None,
                         help="Path to model trained with label_mode=mpp")
     parser.add_argument("--out", type=str, default=None,
@@ -90,7 +87,6 @@ def main():
     # Load models
     models = OrderedDict()
     for name, path in [("last", cli.model_last),
-                       ("error_chain", cli.model_error_chain),
                        ("mpp", cli.model_mpp)]:
         if path is not None:
             print(f"Loading {name} model from {path}")
@@ -183,7 +179,7 @@ def main():
 
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(8, 6))
-    markers = {"last": "o", "error_chain": "s", "mpp": "^", "MWPM": "D"}
+    markers = {"last": "o", "mpp": "^", "MWPM": "D"}
 
     for method, data in results.items():
         if not data:

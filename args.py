@@ -12,8 +12,10 @@ class Args:
     k: int = 20
     seed: int | None = None
     norm: float | int = torch.inf
-    label_mode: str = "error_chain"  # "last", "mpp", or "error_chain"
-    weight_last: bool = False  # upweight the final chunk's loss by factor t
+    label_mode: str = "mpp"  # "last" or "mpp"
+    use_fake_endings: bool = False  # enable fake ending branch (training only)
+    fake_loss_weight: float = 1.0   # weight for fake ending intermediate loss
+    final_loss_weight: float = 1.2  # weight for final prediction loss
 
     # Torch
     device: torch.device = field(

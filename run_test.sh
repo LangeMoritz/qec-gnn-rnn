@@ -18,17 +18,14 @@ latest_model() {
 
 for d in 3 5; do
     M_LAST=$(latest_model "d${d}_p0.001_t50_dt2_last_*.pt")
-    M_EC=$(latest_model "d${d}_p0.001_t50_dt2_error_chain_*.pt")
     M_MPP=$(latest_model "d${d}_p0.001_t50_dt2_mpp_*.pt")
 
     echo "=== d=$d ==="
-    echo "  last:        $M_LAST"
-    echo "  error_chain: $M_EC"
-    echo "  mpp:         $M_MPP"
+    echo "  last: $M_LAST"
+    echo "  mpp:  $M_MPP"
 
     python examples/test_nn.py --d "$d" --p 0.001 \
         --model_last "$M_LAST" \
-        --model_error_chain "$M_EC" \
         --model_mpp "$M_MPP" \
         --out "eval_d${d}_p0.001"
 done

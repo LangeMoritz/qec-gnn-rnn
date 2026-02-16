@@ -25,11 +25,20 @@ class GRUDecoder(nn.Module):
 
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
-        self.rnn = nn.GRU(
-            args.embedding_features[-1],
-            args.hidden_size, num_layers=args.n_gru_layers,
-            batch_first=True
-        )
+        if args.use_fake_endings:
+            self.rnn_layers = nn.ModuleList([
+                nn.GRU(
+                    args.embedding_features[-1] if i == 0 else args.hidden_size,
+                    args.hidden_size, num_layers=1, batch_first=True
+                )
+                for i in range(args.n_gru_layers)
+            ])
+        else:
+            self.rnn = nn.GRU(
+                args.embedding_features[-1],
+                args.hidden_size, num_layers=args.n_gru_layers,
+                batch_first=True
+            )
 
         self.decoder = nn.Sequential(
             nn.Linear(args.hidden_size, 1),
@@ -41,20 +50,45 @@ class GRUDecoder(nn.Module):
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
 
-    def forward(self, x, edge_index, edge_attr, batch_labels, label_map):
-        x = self.embed(x, edge_index, edge_attr, batch_labels)
+    def forward(self, x, edge_index, edge_attr, batch_labels, label_map,
+                fake_x=None, fake_edge_index=None, fake_edge_attr=None,
+                fake_batch_labels=None, fake_label_map=None):
+        bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         B = int(label_map[:, 0].max().item()) + 1
-        x = group(x, label_map, B, self.g_max, self.empty_embedding)
-        # x shape: [B, g_max, embed_dim] — fixed size, no packing
+        bulk = group(bulk_emb, label_map, B, self.g_max, self.empty_embedding)
+        # bulk shape: [B, g_max, embed_dim]
 
-        out, h = self.rnn(x)
-        # out shape: [B, g_max, hidden_size]
+        if not self.args.use_fake_endings:
+            out, h = self.rnn(bulk)
+            predictions = self.decoder(out).squeeze(-1)
+            final_prediction = self.decoder(h[-1])
+            return predictions, final_prediction
 
-        predictions = self.decoder(out).squeeze(-1)
-        # predictions shape: [B, g_max]
+        # Split-layer path: bulk through all layers
+        h = bulk
+        layer_outputs = []
+        for layer in self.rnn_layers:
+            h, _ = layer(h)
+            layer_outputs.append(h)
+        bulk_out = h  # [B, g_max, hidden]
 
-        final_prediction = self.decoder(h[-1])
-        # final_prediction shape: [B, 1]
+        predictions = self.decoder(bulk_out).squeeze(-1)
+        final_prediction = self.decoder(bulk_out[:, -1, :])
+
+        if fake_x is not None:
+            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels)
+            fake = group(fake_emb, fake_label_map, B, self.g_max, self.empty_embedding)
+            # fake shape: [B, g_max, embed_dim]
+
+            # Fake through same layers (batched single step, h_init from bulk)
+            f = fake.reshape(B * self.g_max, 1, -1)
+            for i, layer in enumerate(self.rnn_layers):
+                h_init = layer_outputs[i].reshape(B * self.g_max, 1, -1).permute(1, 0, 2).contiguous()
+                f, _ = layer(f, h_init)
+            fake_out = f.reshape(B, self.g_max, -1)
+
+            # Override predictions with fake ending predictions
+            predictions = self.decoder(fake_out).squeeze(-1)
 
         return predictions, final_prediction
 
@@ -128,19 +162,25 @@ class GRUDecoder(nn.Module):
                 optim.zero_grad()
 
                 t0 = time.perf_counter()
-                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = dataset.generate_batch()
+                batch = dataset.generate_batch()
+                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+                fake_data = batch[7] if len(batch) > 7 else None
 
                 t1 = time.perf_counter()
-                # out shape: [B, g_max] — fixed size, predictions for all chunks
-                out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
+                if fake_data is not None:
+                    fx, fe_idx, fb_labels, fl_map, fe_attr = fake_data
+                    out, final_prediction = self.forward(
+                        x, edge_index, edge_attr, batch_labels, label_map,
+                        fx, fe_idx, fe_attr, fb_labels, fl_map)
+                else:
+                    out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
 
-                if self.args.label_mode != "last":
-                    loss_raw = nn.functional.binary_cross_entropy(out, flips_full, reduction='none')
-                    if self.args.weight_last:
-                        weights = torch.ones_like(loss_raw)
-                        weights[:, -1] = self.args.t
-                        loss_raw = loss_raw * weights
-                    loss = loss_raw.mean()
+                if self.args.use_fake_endings and self.args.label_mode != "last" and fake_data is not None:
+                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full, reduction='none').mean()
+                    final_loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
+                    loss = self.args.fake_loss_weight * fake_loss + self.args.final_loss_weight * final_loss
+                elif self.args.label_mode != "last":
+                    loss = nn.functional.binary_cross_entropy(out, flips_full)
                 else:
                     loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
 
@@ -192,7 +232,8 @@ class GRUDecoder(nn.Module):
         data_time, model_time = 0, 0
         for i in tqdm(range(n_iter), disable=verbose):
             t0 = time.perf_counter()
-            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = dataset.generate_batch()
+            batch = dataset.generate_batch()
+            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
             t1 = time.perf_counter()
             out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
             t2 = time.perf_counter()

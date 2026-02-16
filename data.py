@@ -86,6 +86,151 @@ def add_mpp_to_circuit(circuit: stim.Circuit, distance: int) -> stim.Circuit:
     return modified
 
 
+def add_fake_endings_to_circuit(circuit: stim.Circuit, distance: int) -> stim.Circuit:
+    """Insert noiseless Z-stabilizer + logical-Z MPP after each round.
+
+    Per round, inserts:
+      - n_z MPPs (one per Z stabilizer) + n_z DETECTORs comparing each to its MR
+      - 1 MPP for logical Z + OBSERVABLE_INCLUDE tracking it
+
+    Fake ending detectors get time coordinate round + 0.5.
+    Observable 0 = final logical (standard), observables 1..R = per-round logical.
+    """
+    # --- Extract circuit structure ---
+    qubit_coords = {}
+    for ins in circuit.flattened():
+        if ins.name == "QUBIT_COORDS":
+            args = ins.gate_args_copy()
+            for t in ins.targets_copy():
+                qubit_coords[t.value] = tuple(args)
+
+    data_qubits_set = set()
+    for ins in circuit.flattened():
+        if ins.name == "M":
+            data_qubits_set = {t.value for t in ins.targets_copy()}
+
+    ancilla_order = []
+    for ins in circuit.flattened():
+        if ins.name == "MR":
+            ancilla_order = [t.value for t in ins.targets_copy()]
+            break
+
+    # Z ancillas: no H gate (X ancillas get H before/after CX)
+    h_qubits = set()
+    for ins in circuit.flattened():
+        if ins.name == "H":
+            h_qubits.update(t.value for t in ins.targets_copy())
+    z_ancilla_set = {a for a in ancilla_order if a not in h_qubits}
+
+    # For each Z ancilla, find data qubits via CX (data=control, ancilla=target)
+    z_stab_data = {a: set() for a in z_ancilla_set}
+    for ins in circuit.flattened():
+        if ins.name == "CX":
+            targets = ins.targets_copy()
+            for i in range(0, len(targets), 2):
+                ctrl, targ = targets[i].value, targets[i + 1].value
+                if targ in z_stab_data and ctrl in data_qubits_set:
+                    z_stab_data[targ].add(ctrl)
+
+    z_stabs = [(a, sorted(dqs)) for a, dqs in sorted(z_stab_data.items())]
+    n_z = len(z_stabs)
+
+    # Logical Z qubits (top row of data qubits)
+    if qubit_coords and data_qubits_set:
+        data_coords = {q: qubit_coords[q] for q in data_qubits_set if q in qubit_coords}
+        min_y = min(y for _, y in data_coords.values())
+        logical_z_qubits = sorted(
+            [q for q, (_, y) in data_coords.items() if y == min_y]
+        )
+    else:
+        logical_z_qubits = [1, 3, 5]
+
+    ancilla_mr_pos = {a: i for i, a in enumerate(ancilla_order)}
+    n_anc = len(ancilla_order)
+    mpps_per_round = n_z + 1  # Z stabilizers + logical Z
+
+    # --- Record index shifting (n_z + 1 MPPs per round) ---
+    def shift_rec(x, std_count, mpp_count):
+        std_pos = std_count + x
+        rounds_before = std_pos // n_anc
+        mpp_rounds = mpp_count // mpps_per_round if mpps_per_round > 0 else 0
+        num_mpps_before = min(rounds_before, mpp_rounds) * mpps_per_round
+        return x + num_mpps_before - mpp_count
+
+    # --- Build modified circuit ---
+    modified = stim.Circuit()
+    std_count = 0
+    mpp_count = 0
+    round_idx = 0
+    obs_idx = 1
+
+    for ins in circuit.flattened():
+        name = ins.name
+
+        if name == "DETECTOR":
+            targets = ins.targets_copy()
+            args = ins.gate_args_copy()
+            shifted = [
+                stim.target_rec(shift_rec(t.value, std_count, mpp_count))
+                for t in targets
+            ]
+            modified.append("DETECTOR", shifted, args)
+        elif name == "OBSERVABLE_INCLUDE":
+            targets = ins.targets_copy()
+            args = ins.gate_args_copy()
+            obs_id = int(args[0]) if args else 0
+            shifted = [
+                stim.target_rec(shift_rec(t.value, std_count, mpp_count))
+                for t in targets
+            ]
+            modified.append("OBSERVABLE_INCLUDE", shifted, obs_id)
+        else:
+            modified.append(ins)
+
+        if name in ["M", "MR"]:
+            std_count += len(ins.targets_copy())
+
+        if name == "MR":
+            # --- Z stabilizer MPPs (n_z measurements) ---
+            for anc, data_qs in z_stabs:
+                mpp_targets = []
+                for i, q in enumerate(data_qs):
+                    mpp_targets.append(stim.target_z(q))
+                    if i < len(data_qs) - 1:
+                        mpp_targets.append(stim.target_combiner())
+                modified.append("MPP", mpp_targets)
+
+            # --- Logical Z MPP (1 measurement) ---
+            mpp_targets = []
+            for i, q in enumerate(logical_z_qubits):
+                mpp_targets.append(stim.target_z(q))
+                if i < len(logical_z_qubits) - 1:
+                    mpp_targets.append(stim.target_combiner())
+            modified.append("MPP", mpp_targets)
+
+            # --- Fake ending DETECTORs (Z stab MPP vs MR) ---
+            for stab_idx, (anc, data_qs) in enumerate(z_stabs):
+                mr_pos = ancilla_mr_pos[anc]
+                mpp_rec = -(mpps_per_round - stab_idx)
+                mr_rec = -(mpps_per_round + n_anc - mr_pos)
+
+                coords = list(qubit_coords.get(anc, (0, 0))) + [round_idx + 0.5]
+                modified.append(
+                    "DETECTOR",
+                    [stim.target_rec(mpp_rec), stim.target_rec(mr_rec)],
+                    coords,
+                )
+
+            # --- Logical Z OBSERVABLE_INCLUDE ---
+            modified.append("OBSERVABLE_INCLUDE", [stim.target_rec(-1)], obs_idx)
+            obs_idx += 1
+
+            mpp_count += mpps_per_round
+            round_idx += 1
+
+    return modified
+
+
 class FlipType(Enum):
     BIT = 1
     PHASE = 2
@@ -113,6 +258,7 @@ class Dataset:
         self.seed = args.seed
         self.norm = args.norm
         self.label_mode = args.label_mode
+        self.use_fake_endings = getattr(args, 'use_fake_endings', False)
 
         if flip is FlipType.BIT:
             self.code_task = "surface_code:rotated_memory_z"
@@ -126,7 +272,6 @@ class Dataset:
         """
         Initializes circuits and samplers based on self.label_mode:
         - "last": DEM sampler, no intermediate label precomputation
-        - "error_chain": DEM sampler + error mechanism -> time mapping
         - "mpp": MPP circuit detector sampler for intermediate labels
         """
         circuit = stim.Circuit.generated(
@@ -141,7 +286,7 @@ class Dataset:
         self.circuits = [circuit]
         self.dem = [circuit.detector_error_model()]
 
-        # DEM sampler (used by "last" and "error_chain" modes)
+        # DEM sampler (used by "last" mode)
         self.samplers = [dem.compile_sampler(seed=self.seed) for dem in self.dem]
 
         # Detector coordinates (always needed for graph construction)
@@ -163,40 +308,45 @@ class Dataset:
         self._precompute_edge_weights()
 
         # Mode-specific initialization
-        if self.label_mode == "error_chain":
-            self._init_error_chain_data()
-        elif self.label_mode == "mpp":
+        if self.label_mode == "mpp":
             self._init_mpp_samplers()
 
-    def _init_error_chain_data(self):
-        """Precompute error mechanism -> time mapping for error-chain labels."""
-        for idx, dem in enumerate(self.dem):
-            det_times = self.detector_coordinates[idx][:, -1].astype(int)
-
-            term_dets = []
-            term_logs = []
-            for ins in dem.flattened():
-                if ins.type != "error":
-                    continue
-                ts = ins.targets_copy()
-                term_dets.append(np.fromiter((t.val for t in ts if t.is_relative_detector_id()), dtype=int))
-                term_logs.append(np.fromiter((t.val for t in ts if t.is_logical_observable_id()), dtype=int))
-
-            n_terms = len(term_dets)
-            L0_mask = np.array([0 in logs for logs in term_logs], dtype=bool)
-            has_dets = np.array([dets.size > 0 for dets in term_dets], dtype=bool)
-
-            self.time_idx = np.full(n_terms, -1, dtype=int)
-            for i, dets in enumerate(term_dets):
-                if L0_mask[i] and has_dets[i]:
-                    self.time_idx[i] = det_times[dets].max()
-
-            self.valid_cols = self.time_idx >= 0
+        if self.use_fake_endings and self.label_mode != "last":
+            self._init_fake_ending_samplers()
 
     def _init_mpp_samplers(self):
         """Build MPP circuits and compile their detector samplers."""
         self.mpp_circuits = [add_mpp_to_circuit(c, self.distance) for c in self.circuits]
         self.mpp_samplers = [c.compile_detector_sampler(seed=self.seed) for c in self.mpp_circuits]
+
+    def _init_fake_ending_samplers(self):
+        """Build fake ending circuits and precompute detector masks."""
+        self.fake_circuits = [add_fake_endings_to_circuit(c, self.distance) for c in self.circuits]
+        self.fake_samplers = [c.compile_detector_sampler(seed=self.seed) for c in self.fake_circuits]
+
+        # Precompute detector index masks: bulk (integer time) vs fake (fractional time)
+        dem = self.fake_circuits[0].detector_error_model(allow_gauge_detectors=True)
+        coords = dem.get_detector_coordinates()
+        bulk_mask = []
+        fake_mask = []
+        for d_id in sorted(coords.keys()):
+            t = coords[d_id][-1]
+            if t == int(t):
+                bulk_mask.append(d_id)
+            else:
+                fake_mask.append(d_id)
+
+        self.fake_bulk_cols = np.array(bulk_mask, dtype=np.int64)
+        self.fake_fake_cols = np.array(fake_mask, dtype=np.int64)
+
+        # Fake detector coordinates: (x, y, round) from the DEM
+        fake_det_coords = np.array([coords[d][-3:] for d in fake_mask])
+        fake_det_coords -= fake_det_coords.min(axis=0)
+        # Round index for each fake detector (integer part of fractional time)
+        self.fake_det_rounds = (fake_det_coords[:, -1] - 0.5).astype(int)
+        self.fake_det_xy = fake_det_coords[:, :2].astype(np.int64)
+        rounds = int(fake_det_coords[:, -1].max() - 0.5) + 1
+        self.n_fake_per_round = len(fake_mask) // rounds  # = n_z (Z stabilizers)
 
     def _precompute_edge_weights(self):
         """Precompute fully-connected edge weight matrix for chunk-local positions."""
@@ -221,21 +371,23 @@ class Dataset:
         # Cache for local pair indices by group size
         self._local_pairs = {}
 
-    def sample_syndromes(self, sampler_idx: int) -> tuple[np.ndarray, np.ndarray]:
+    def sample_syndromes(self, sampler_idx: int):
         """
         Samples detection events and logical labels. Return shape depends on label_mode:
-        - "last":        (detection_array [B, s], last_flip [B, 1])
-        - "error_chain": (detection_array [B, s], logicals_each_round [B, T])
-        - "mpp":         (detection_array [B, s], logicals_each_round [B, T])
+        - "last": (detection_array [B, s], last_flip [B, 1])
+        - "mpp":  (detection_array [B, s], logicals_each_round [B, T])
+
+        When use_fake_endings=True and label_mode="mpp", returns 3 values:
+        - (bulk_detection_array, logicals_each_round, fake_detection_array)
 
         Only shots with at least one detection event are retained.
         """
+        if self.use_fake_endings and self.label_mode != "last":
+            return self._sample_fake_endings(sampler_idx)
         if self.label_mode == "last":
             return self._sample_last(sampler_idx)
-        elif self.label_mode == "mpp":
-            return self._sample_mpp(sampler_idx)
         else:
-            return self._sample_error_chain(sampler_idx)
+            return self._sample_mpp(sampler_idx)
 
     def _sample_last(self, sampler_idx: int):
         """Sample from DEM, return only final logical label."""
@@ -279,43 +431,38 @@ class Dataset:
         logicals_each_round = np.hstack([obs_flips[:, 1:], obs_flips[:, 0:1]])
         return detection_array.astype(bool), logicals_each_round
 
-    def _sample_error_chain(self, sampler_idx: int):
-        """Sample from DEM with return_errors, compute intermediate labels from error mechanisms."""
-        sampler = self.samplers[sampler_idx]
-        detection_events_list, observable_flips_list, err_data_list = [], [], []
+    def _sample_fake_endings(self, sampler_idx: int):
+        """Sample from fake ending circuit, split bulk vs fake detectors.
+
+        Returns:
+            bulk_detection_array [B, n_bulk]: bulk detector events (same as standard circuit)
+            logicals_each_round [B, T]: intermediate + final logical labels
+            fake_detection_array [B, n_fake]: fake ending detector events
+        """
+        sampler = self.fake_samplers[sampler_idx]
+        num_det = self.fake_circuits[sampler_idx].num_detectors
+        detection_events_list, observable_flips_list = [], []
+        n_draw = int(self.batch_size / self._accept_rate * 1.1) + 1
         while len(detection_events_list) < self.batch_size:
-            detection_events, observable_flips, err_data = sampler.sample(
-                shots=self.batch_size, return_errors=True)
-            shots_w_flips = np.sum(detection_events, axis=1) != 0
-            detection_events_list.extend(detection_events[shots_w_flips, :])
-            observable_flips_list.extend(observable_flips[shots_w_flips, :])
-            err_data_list.extend(err_data[shots_w_flips, :])
-        detection_array = np.array(detection_events_list[:self.batch_size])
-        flips_array = np.array(observable_flips_list[:self.batch_size], dtype=np.int32)
-        err_data_array = np.array(err_data_list[:self.batch_size], dtype=bool)
+            result = sampler.sample(shots=n_draw, append_observables=True)
+            detection_events = result[:, :num_det]
+            observable_flips = result[:, num_det:]
+            # Filter by bulk detectors only (fake endings can be all-zero)
+            bulk_events = detection_events[:, self.fake_bulk_cols]
+            mask = np.any(bulk_events, axis=1)
+            detection_events_list.extend(detection_events[mask])
+            observable_flips_list.extend(observable_flips[mask])
+            if len(detection_events_list) < self.batch_size:
+                remaining = self.batch_size - len(detection_events_list)
+                rate = max(mask.sum() / n_draw, 0.05)
+                n_draw = int(remaining / rate * 1.2) + 1
+        all_det = np.array(detection_events_list[:self.batch_size])
+        obs_flips = np.array(observable_flips_list[:self.batch_size], dtype=np.int32)
 
-        # Accumulate counts per time step for all shots
-        E = err_data_array[:, self.valid_cols].astype(np.uint8)
-        idx = self.time_idx[self.valid_cols].astype(np.int32)
-        T = self._sampler_t[0] + 1
-
-        order = np.argsort(idx, kind="stable")
-        E_sorted = E[:, order]
-        idx_sorted = idx[order]
-
-        seg_starts = np.r_[0, np.flatnonzero(np.diff(idx_sorted)) + 1]
-        uniq_idx = idx_sorted[seg_starts]
-
-        counts_grouped = np.add.reduceat(E_sorted, seg_starts, axis=1)
-
-        counts = np.zeros((self.batch_size, T), dtype=np.uint16)
-        counts[:, uniq_idx] = counts_grouped
-
-        parity = counts & 1
-        logicals_each_round = np.bitwise_xor.accumulate(parity, axis=1).astype(np.int32)
-        assert np.array_equal(logicals_each_round[:, -1], flips_array[:, 0]), \
-            "Error-chain final logical value mismatch"
-        return detection_array.astype(bool), logicals_each_round
+        bulk_detection_array = all_det[:, self.fake_bulk_cols].astype(bool)
+        fake_detection_array = all_det[:, self.fake_fake_cols].astype(bool)
+        logicals_each_round = np.hstack([obs_flips[:, 1:], obs_flips[:, 0:1]])
+        return bulk_detection_array, logicals_each_round, fake_detection_array
 
     def get_sliding_window(self, node_features: list[np.ndarray], sampler_t: int
                            ) -> tuple[list[np.ndarray], np.ndarray]:
@@ -443,6 +590,90 @@ class Dataset:
 
         return edge_index, edge_attr
 
+    def _build_fake_chunks(self, bulk_syndromes, fake_syndromes, sampler_idx, label_map_np):
+        """Build fake ending chunks from bulk + fake ending detectors.
+
+        For each (batch, chunk) in label_map:
+          - chunk j covers bulk times [j, j+dt-1]
+          - fake chunk j contains:
+            t_local=0: bulk detectors at time j+dt-1 (last round of bulk window)
+            t_local=1: fake ending detectors at round j+dt-1
+
+        Only chunks with at least one node are included in fake_label_map.
+        """
+        det_coords = self.detector_coordinates[sampler_idx]
+        det_times = det_coords[:, -1]  # time coordinate per bulk detector
+
+        all_features = []
+        all_graph_labels = []  # per-node graph index (sequential, only non-empty)
+        kept_label_map = []    # label_map rows for non-empty fake chunks
+        graph_counter = 0
+
+        for row_idx in range(label_map_np.shape[0]):
+            batch_i = int(label_map_np[row_idx, 0])
+            chunk_j = int(label_map_np[row_idx, 1])
+            last_round_time = chunk_j + self.dt - 1
+
+            # Bulk detectors at the last round of this chunk (t_local = 0)
+            bulk_fired = np.where(bulk_syndromes[batch_i])[0]
+            bulk_at_last = bulk_fired[det_times[bulk_fired] == last_round_time]
+            n_bulk = len(bulk_at_last)
+
+            # Fake ending detectors at this round (t_local = 1)
+            fake_fired = np.where(fake_syndromes[batch_i])[0]
+            fake_at_round = fake_fired[self.fake_det_rounds[fake_fired] == last_round_time]
+            n_fake = len(fake_at_round)
+
+            n_total = n_bulk + n_fake
+            if n_total == 0:
+                continue
+
+            # Build features: [x, y, t_local]
+            features = np.empty((n_total, 3), dtype=np.int64)
+            if n_bulk > 0:
+                features[:n_bulk, :2] = det_coords[bulk_at_last, :2]
+                features[:n_bulk, 2] = 0
+            if n_fake > 0:
+                features[n_bulk:, :2] = self.fake_det_xy[fake_at_round]
+                features[n_bulk:, 2] = 1
+
+            all_features.append(features)
+            all_graph_labels.append(np.full(n_total, graph_counter, dtype=np.int64))
+            kept_label_map.append(label_map_np[row_idx])
+            graph_counter += 1
+
+        if not all_features:
+            fake_features = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
+            fake_batch_labels = torch.zeros(0, dtype=torch.long, device=self.device)
+            fake_edge_index = torch.zeros((2, 0), dtype=torch.long, device=self.device)
+            fake_edge_attr = torch.zeros(0, dtype=torch.float32, device=self.device)
+            fake_label_map = torch.zeros((0, 2), dtype=torch.long, device=self.device)
+            return fake_features, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr
+
+        coords_int = np.concatenate(all_features)
+        graph_labels_np = np.concatenate(all_graph_labels)
+        fake_lmap = np.stack(kept_label_map)
+
+        # Build group starts/sizes from sequential graph labels
+        change = np.empty(len(graph_labels_np), dtype=bool)
+        change[0] = True
+        change[1:] = graph_labels_np[1:] != graph_labels_np[:-1]
+        group_starts = np.flatnonzero(change)
+        group_sizes = np.diff(np.append(group_starts, len(graph_labels_np)))
+        labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
+
+        # Compute edges
+        edge_index, edge_attr = self._compute_fc_edges(coords_int.astype(np.uint64), group_starts, group_sizes)
+
+        # Convert to tensors
+        fake_features = torch.from_numpy(coords_int.astype(np.float32)).to(self.device)
+        fake_batch_labels = torch.from_numpy(labels).to(self.device)
+        fake_label_map = torch.from_numpy(fake_lmap).to(dtype=torch.long, device=self.device)
+        edge_index = edge_index.to(self.device)
+        edge_attr = edge_attr.to(self.device)
+
+        return fake_features, edge_index, fake_batch_labels, fake_label_map, edge_attr
+
     def generate_batch(self):
         """
         Generates a batch of graphs.
@@ -452,7 +683,13 @@ class Dataset:
             last_label, flips_full
         """
         sampler_idx = np.random.choice(len(self.samplers))
-        syndromes, label_data = self.sample_syndromes(sampler_idx)
+        sample_result = self.sample_syndromes(sampler_idx)
+
+        if self.use_fake_endings and self.label_mode != "last":
+            syndromes, label_data, fake_syndromes = sample_result
+        else:
+            syndromes, label_data = sample_result
+            fake_syndromes = None
 
         if self.label_mode == "last":
             last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
@@ -476,6 +713,12 @@ class Dataset:
 
         label_map = np.column_stack([batch_labels[group_starts], chunk_labels[group_starts]])
         labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
+
+        # Generate fake ending data before converting label_map to tensor
+        fake_data = None
+        if self.use_fake_endings and self.label_mode != "last" and fake_syndromes is not None:
+            fake_data = self._build_fake_chunks(syndromes, fake_syndromes, sampler_idx, label_map)
+
         label_map = torch.from_numpy(label_map)
         labels = torch.from_numpy(labels)
 
@@ -487,7 +730,10 @@ class Dataset:
         edge_index = edge_index.to(self.device)
         edge_attr = edge_attr.to(self.device)
 
-        return node_features, edge_index, labels, label_map, edge_attr, last_label, flips_full
+        result = (node_features, edge_index, labels, label_map, edge_attr, last_label, flips_full)
+        if fake_data is not None:
+            return result + (fake_data,)
+        return result
 
     def plot_graph(self, node_features, edge_index, labels, graph_idx):
         node_features = node_features.cpu().numpy()
