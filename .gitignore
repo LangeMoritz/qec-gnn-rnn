@@ -22,6 +22,7 @@ __pycache__/
 *.json
 *.png
 *.md
+!docs/*.md
 *.dem
 *.svg
 *.01
