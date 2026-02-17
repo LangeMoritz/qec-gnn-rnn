@@ -88,6 +88,10 @@ if __name__ == "__main__":
     parser.add_argument('--test_rounds', type=int, nargs='+',
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument('--test_shots', type=int, default=1_000_000)
+    parser.add_argument('--auto_batch_size', action='store_true',
+                        help='Auto-tune batch_size at training start (CUDA only)')
+    parser.add_argument('--no_prefetch', action='store_true',
+                        help='Disable background data prefetching')
 
     args_cli = parser.parse_args()
 
@@ -112,7 +116,9 @@ if __name__ == "__main__":
         hidden_size=512,
         n_gru_layers=4,
         log_wandb=args_cli.wandb,
-        wandb_project=args_cli.wandb_project
+        wandb_project=args_cli.wandb_project,
+        prefetch=not args_cli.no_prefetch,
+        auto_batch_size=args_cli.auto_batch_size,
     )
     date = datetime.now().strftime("%y%m%d")
     job_id = os.environ.get("SLURM_JOB_ID", "")

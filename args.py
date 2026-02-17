@@ -28,6 +28,8 @@ class Args:
     n_epochs: int = 600
     lr: float = 1e-3
     min_lr: float = 1e-4
+    prefetch: bool = True            # background data prefetching
+    auto_batch_size: bool = False    # auto-tune batch_size at training start
 
     # Model
     embedding_features: list = field(default_factory=lambda: [3, 32, 64, 128, 256])

@@ -1,6 +1,6 @@
 import torch, time, os
 import torch.nn as nn
-from data import Dataset
+from data import Dataset, BatchPrefetcher, find_optimal_batch_size
 from args import Args
 from utils import GraphConvLayer, TrainingLogger, group, standard_deviation
 from torch_geometric.nn import global_mean_pool
@@ -116,6 +116,18 @@ class GRUDecoder(nn.Module):
             logger.on_training_begin(self.args)
         
         self.train()
+
+        # Auto batch size tuning (CUDA only, before dataset creation)
+        if self.args.auto_batch_size and self.args.device.type == "cuda":
+            original_total = self.args.batch_size * self.args.n_batches
+            optimal_bs = find_optimal_batch_size(self.args, self)
+            if optimal_bs != self.args.batch_size:
+                print(f"Auto-tuned batch_size: {self.args.batch_size} → {optimal_bs}")
+                self.args.batch_size = optimal_bs
+                self.args.n_batches = max(1, original_total // optimal_bs)
+                print(f"Adjusted n_batches: {self.args.n_batches} "
+                      f"(total samples/epoch: {self.args.batch_size * self.args.n_batches})")
+
         dataset = Dataset(self.args)
 
         # Compute MWPM baseline accuracy once for wandb reference line.
@@ -156,21 +168,34 @@ class GRUDecoder(nn.Module):
         schedule = lambda epoch: max(0.95 ** (epoch + epoch_offset), self.args.min_lr / self.args.lr)
         scheduler = LambdaLR(optim, lr_lambda=schedule)
         best_accuracy = max((h["accuracy"] for h in prior_history), default=0)
-        
+
+        # Set up prefetcher or direct dataset
+        use_prefetch = self.args.prefetch
+        prefetcher = BatchPrefetcher(self.args, queue_size=2) if use_prefetch else None
+
         for i in range(epoch_offset + 1, epoch_offset + self.args.n_epochs + 1):
             if local_log:
                 logger.on_epoch_begin(i)
-        
+
             epoch_loss = 0
             epoch_acc = 0
             data_time = 0
             model_time = 0
-        
-            for _ in range(self.args.n_batches):
+
+            if use_prefetch:
+                prefetcher.start(self.args.n_batches)
+                batch_iter = iter(prefetcher)
+            else:
+                batch_iter = range(self.args.n_batches)
+
+            for batch_or_idx in batch_iter:
                 optim.zero_grad()
 
                 t0 = time.perf_counter()
-                batch = dataset.generate_batch()
+                if use_prefetch:
+                    batch = batch_or_idx  # already generated
+                else:
+                    batch = dataset.generate_batch()
                 x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
                 fake_data = batch[7] if len(batch) > 7 else None
 

@@ -264,25 +264,40 @@ On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x
 | d=5 last | 167 | 48 | 3.5x |
 | d=5 mpp | 186 | 49 | 3.8x |
 
-## Next: Background Data Prefetch
+## Background Data Prefetch (DONE)
 
-Data generation is now the dominant bottleneck (88-96% on A40). Overlapping CPU data generation with GPU forward/backward would hide most of this cost.
+`BatchPrefetcher` (`data.py`) overlaps CPU data generation with GPU forward/backward using a producer-consumer pattern:
 
-### Approach
-- `threading.Thread` or `concurrent.futures.ThreadPoolExecutor`
-- While GPU runs forward+backward on batch N, CPU generates batch N+1
-- Python GIL is released during stim/numpy C extensions → true parallelism
-- Edge computation is pure numpy, GIL-friendly
+- **Own Dataset instance**: Each prefetcher creates its own `Dataset` for thread safety (stim samplers have internal state)
+- **Queue-based**: `Queue(maxsize=2)` — background thread fills, main thread consumes
+- **GIL-friendly**: numpy C operations (FC edges, sliding window) release the GIL → real parallelism
+- **Sentinel-based**: `None` signals end of epoch; queue is drained between epochs
 
-### Files to modify
-- `gru_decoder.py:train_model()` — wrap batch loop with prefetch logic
-- Possibly `data.py:generate_batch()` — ensure thread safety (stim samplers, numpy RNG)
+Enabled by default (`--no_prefetch` to disable). With prefetch, `data_time` in epoch logs measures only the queue wait time (time GPU was idle waiting for data), not total data generation time.
 
-### Considerations
-- Stim samplers: thread-safe if each thread uses its own sampler (one per Dataset)
-- NumPy RNG: `np.random.choice` uses global state — may need per-thread `Generator`
-- Tensor creation: CPU tensors in background thread, `.to(device)` in main thread
-- Expected impact: hide ~30-40s of data time behind ~3-5s of model time → near-zero data overhead
+Expected impact: hide ~model_time per epoch (3-8s), since data >> model the overlap saves ~10-15%.
+
+## Auto Batch Size Tuning (DONE)
+
+`find_optimal_batch_size()` (`data.py`) runs at training start when `--auto_batch_size` is passed (CUDA only):
+
+1. For each candidate batch_size `[512, 1024, 2048, 4096, 8192, 16384]`:
+   - Generate one batch → `data_time`
+   - Forward + backward pass → `model_time`
+   - `throughput = batch_size / max(data_time, model_time)`
+2. OOM stops the search at larger sizes
+3. Picks the candidate with highest throughput
+4. Scales `n_batches` inversely to keep total samples/epoch constant
+
+Warmup cost: ~30-60s (6 candidates × ~5-10s each). The bigger lever is **batch_size**: larger batches amortize per-batch Python overhead in graph construction and keep the GPU busier per step.
+
+```bash
+# Auto-tune example:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
+
+# Disable prefetch:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
+```
 
 ---
 

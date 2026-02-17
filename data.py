@@ -5,6 +5,9 @@ from tqdm import tqdm
 import time
 import matplotlib.pyplot as plt
 from enum import Enum
+from threading import Thread, Event
+from queue import Queue, Empty
+from copy import deepcopy
 from args import Args
 
 
@@ -767,3 +770,143 @@ class Dataset:
         ax.scatter(z_stabs[1], z_stabs[0], min_t, c="green", alpha=0.3, s=50, label="Z stabilizers")
         plt.legend()
         plt.show()
+
+
+class BatchPrefetcher:
+    """Producer-consumer prefetcher with its own Dataset instance (thread safety).
+
+    Runs generate_batch() in a background thread while the main thread
+    processes the current batch on GPU. numpy C operations release the GIL,
+    so the heavy parts (FC edges, sliding window) get real parallelism.
+    """
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = Dataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        """Start prefetching n_batches in a background thread."""
+        self._stop.clear()
+        # Drain any leftover items from previous epoch
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        """Signal the background thread to stop and drain the queue."""
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+def find_optimal_batch_size(args: Args, model, candidates=None):
+    """Warmup: try batch sizes, measure throughput, pick best.
+
+    For each candidate batch_size:
+      1. Generate one batch → data_time
+      2. Forward + backward pass → model_time
+      3. throughput = batch_size / max(data_time, model_time)
+    OOM stops the search at larger sizes.
+
+    Returns the optimal batch_size.
+    """
+    import torch.nn as nn
+
+    if candidates is None:
+        candidates = [512, 1024, 2048, 4096, 8192, 16384]
+
+    results = []
+    print(f"\n{'='*60}")
+    print(f"Auto batch size tuning ({args.device})")
+    print(f"{'='*60}")
+    print(f"{'batch_size':>12} {'data_time':>10} {'model_time':>11} {'throughput':>12} {'status':>8}")
+    print(f"{'-'*60}")
+
+    for bs in candidates:
+        trial_args = deepcopy(args)
+        trial_args.batch_size = bs
+
+        try:
+            # Data generation timing
+            dataset = Dataset(trial_args)
+            t0 = time.perf_counter()
+            batch = dataset.generate_batch()
+            data_time = time.perf_counter() - t0
+
+            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+            fake_data = batch[7] if len(batch) > 7 else None
+
+            # Model forward + backward timing
+            model.train()
+            if hasattr(torch.cuda, 'synchronize') and args.device.type == 'cuda':
+                torch.cuda.synchronize()
+
+            t0 = time.perf_counter()
+            if fake_data is not None:
+                fx, fe_idx, fb_labels, fl_map, fe_attr = fake_data
+                out, final_prediction = model(
+                    x, edge_index, edge_attr, batch_labels, label_map,
+                    fx, fe_idx, fe_attr, fb_labels, fl_map)
+            else:
+                out, final_prediction = model(x, edge_index, edge_attr, batch_labels, label_map)
+
+            loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
+            loss.backward()
+
+            if hasattr(torch.cuda, 'synchronize') and args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            model_time = time.perf_counter() - t0
+
+            # Clean up gradients
+            model.zero_grad(set_to_none=True)
+
+            throughput = bs / max(data_time, model_time)
+            results.append((bs, data_time, model_time, throughput))
+            print(f"{bs:>12} {data_time:>10.2f}s {model_time:>10.2f}s {throughput:>10.0f} s/s {'':>8}")
+
+            del batch, dataset, x, edge_index, batch_labels, label_map, edge_attr
+            del last_label, flips_full, out, final_prediction, loss
+            if fake_data is not None:
+                del fx, fe_idx, fb_labels, fl_map, fe_attr, fake_data
+            if args.device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
+                print(f"{bs:>12} {'':>10} {'':>11} {'':>12} {'OOM':>8}")
+                if args.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                break
+            raise
+
+    if not results:
+        print(f"All candidates OOM, keeping batch_size={args.batch_size}")
+        print(f"{'='*60}\n")
+        return args.batch_size
+
+    best_bs, _, _, best_tp = max(results, key=lambda r: r[3])
+    print(f"{'-'*60}")
+    print(f"Winner: batch_size={best_bs} ({best_tp:.0f} samples/sec)")
+    print(f"{'='*60}\n")
+    return best_bs
