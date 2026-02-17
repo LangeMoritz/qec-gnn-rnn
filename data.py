@@ -257,8 +257,7 @@ class Dataset:
         self.k = args.k
         self.seed = args.seed
         self.norm = args.norm
-        self.label_mode = args.label_mode
-        self.use_fake_endings = getattr(args, 'use_fake_endings', False)
+        self.use_intermediate = getattr(args, 'use_intermediate', False)
 
         if flip is FlipType.BIT:
             self.code_task = "surface_code:rotated_memory_z"
@@ -270,9 +269,8 @@ class Dataset:
 
     def __init_circuit(self):
         """
-        Initializes circuits and samplers based on self.label_mode:
-        - "last": DEM sampler, no intermediate label precomputation
-        - "mpp": MPP circuit detector sampler for intermediate labels
+        Initializes circuits and samplers.
+        When use_intermediate=True, also builds MPP and fake ending circuits.
         """
         circuit = stim.Circuit.generated(
             self.code_task,
@@ -308,10 +306,8 @@ class Dataset:
         self._precompute_edge_weights()
 
         # Mode-specific initialization
-        if self.label_mode == "mpp":
+        if self.use_intermediate:
             self._init_mpp_samplers()
-
-        if self.use_fake_endings and self.label_mode != "last":
             self._init_fake_ending_samplers()
 
     def _init_mpp_samplers(self):
@@ -373,21 +369,16 @@ class Dataset:
 
     def sample_syndromes(self, sampler_idx: int):
         """
-        Samples detection events and logical labels. Return shape depends on label_mode:
-        - "last": (detection_array [B, s], last_flip [B, 1])
-        - "mpp":  (detection_array [B, s], logicals_each_round [B, T])
-
-        When use_fake_endings=True and label_mode="mpp", returns 3 values:
-        - (bulk_detection_array, logicals_each_round, fake_detection_array)
+        Samples detection events and logical labels. Return shape depends on use_intermediate:
+        - default: (detection_array [B, s], last_flip [B, 1])
+        - intermediate: (bulk_detection_array, logicals_each_round, fake_detection_array)
 
         Only shots with at least one detection event are retained.
         """
-        if self.use_fake_endings and self.label_mode != "last":
+        if self.use_intermediate:
             return self._sample_fake_endings(sampler_idx)
-        if self.label_mode == "last":
-            return self._sample_last(sampler_idx)
         else:
-            return self._sample_mpp(sampler_idx)
+            return self._sample_last(sampler_idx)
 
     def _sample_last(self, sampler_idx: int):
         """Sample from DEM, return only final logical label."""
@@ -685,19 +676,16 @@ class Dataset:
         sampler_idx = np.random.choice(len(self.samplers))
         sample_result = self.sample_syndromes(sampler_idx)
 
-        if self.use_fake_endings and self.label_mode != "last":
+        if self.use_intermediate:
             syndromes, label_data, fake_syndromes = sample_result
-        else:
-            syndromes, label_data = sample_result
-            fake_syndromes = None
-
-        if self.label_mode == "last":
-            last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
-            flips_full = last_label
-        else:
             flips_full = label_data[:, self.dt - 1:]  # shape: [B, g_max]
             flips_full = torch.from_numpy(flips_full).to(dtype=torch.float32, device=self.device)
             last_label = flips_full[:, -1:]
+        else:
+            syndromes, label_data = sample_result
+            fake_syndromes = None
+            last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
+            flips_full = last_label
 
         node_features, batch_labels, chunk_labels, coords_int = self.get_node_features(syndromes, sampler_idx)
         node_features = torch.from_numpy(node_features)
@@ -716,7 +704,7 @@ class Dataset:
 
         # Generate fake ending data before converting label_map to tensor
         fake_data = None
-        if self.use_fake_endings and self.label_mode != "last" and fake_syndromes is not None:
+        if self.use_intermediate and fake_syndromes is not None:
             fake_data = self._build_fake_chunks(syndromes, fake_syndromes, sampler_idx, label_map)
 
         label_map = torch.from_numpy(label_map)

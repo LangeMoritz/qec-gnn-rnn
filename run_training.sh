@@ -14,12 +14,9 @@ source .venv/bin/activate
 
 # send script
 python examples/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
-    --label_mode "${8:-last}" ${9:+--note "$9"} ${10:+--load_path "${10}"} ${11:+--wandb --wandb_project "${11}"} \
+    ${8:+--intermediate} ${9:+--note "$9"} ${10:+--load_path "${10}"} ${11:+--wandb --wandb_project "${11}"} \
     ${12:+--test}
-# sbatch run_training.sh  d  t  dt  batch  nbatch  epochs  p  [mode]  [note]  [load_path]  [wandb_project]  [test]
+# sbatch run_training.sh  d  t  dt  batch  nbatch  epochs  p  [intermediate]  [note]  [load_path]  [wandb_project]  [test]
 # sbatch run_training.sh  3  49  2  2048   256     200     0.001
-# sbatch run_training.sh  3  49  2  2048   256     200     0.001  mpp
-# sbatch run_training.sh  3  49  2  2048   256     200     0.001  mpp  baseline
-# sbatch run_training.sh  3  49  2  2048   256     200     0.001  mpp  finetune  my_model
-# sbatch run_training.sh  3  49  2  2048   256     200     0.001  mpp  baseline  ""  GNN-RNN-mpp
-# sbatch run_training.sh  3  49  2  2048   256     200     0.001  mpp  baseline  ""  ""  test
+# sbatch run_training.sh  3  49  2  2048   256     200     0.001  ""  baseline
+# sbatch run_training.sh  3  49  2  2048   256     200     0.001  int  baseline  ""  GNN-RNN-train-all-times  test

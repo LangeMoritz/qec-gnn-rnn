@@ -7,7 +7,7 @@ Plots logical error rate P_L vs rounds on a log-log scale, with
 Usage:
     python examples/test_nn.py --d 3 --p 0.001 \
         --model_last models/d3_last.pt \
-        --model_mpp models/d3_mpp.pt
+        --model_intermediate models/d3_intermediate.pt
 
     # Quick sanity check:
     python examples/test_nn.py --d 3 --p 0.001 \
@@ -59,9 +59,9 @@ def main():
     parser.add_argument("--rounds", type=int, nargs="+",
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument("--model_last", type=str, default=None,
-                        help="Path to model trained with label_mode=last")
-    parser.add_argument("--model_mpp", type=str, default=None,
-                        help="Path to model trained with label_mode=mpp")
+                        help="Path to model trained without --intermediate")
+    parser.add_argument("--model_intermediate", type=str, default=None,
+                        help="Path to model trained with --intermediate")
     parser.add_argument("--out", type=str, default=None,
                         help="Output prefix for CSV and figure (default: auto)")
     cli = parser.parse_args()
@@ -71,24 +71,22 @@ def main():
     os.makedirs("results", exist_ok=True)
     out_prefix = os.path.join("results", out_prefix)
 
-    # Shared model args (must match training config)
-    model_args = Args(
-        distance=cli.d,
-        error_rate=cli.p,
-        t=cli.rounds[0],  # placeholder, overridden per round
-        dt=cli.dt,
-        label_mode="last",
-        batch_size=cli.batch_size,
-        embedding_features=[3, 32, 64, 128, 256, 512],
-        hidden_size=512,
-        n_gru_layers=4,
-    )
-
     # Load models
     models = OrderedDict()
-    for name, path in [("last", cli.model_last),
-                       ("mpp", cli.model_mpp)]:
+    for name, path, intermediate in [("last", cli.model_last, False),
+                                     ("intermediate", cli.model_intermediate, True)]:
         if path is not None:
+            model_args = Args(
+                distance=cli.d,
+                error_rate=cli.p,
+                t=cli.rounds[0],
+                dt=cli.dt,
+                use_intermediate=intermediate,
+                batch_size=cli.batch_size,
+                embedding_features=[3, 32, 64, 128, 256, 512],
+                hidden_size=512,
+                n_gru_layers=4,
+            )
             print(f"Loading {name} model from {path}")
             models[name] = load_model(path, model_args)
 
@@ -112,7 +110,6 @@ def main():
             error_rate=cli.p,
             t=t,
             dt=cli.dt,
-            label_mode="last",
             batch_size=cli.batch_size,
             embedding_features=[3, 32, 64, 128, 256, 512],
             hidden_size=512,
@@ -180,7 +177,7 @@ def main():
 
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(8, 6))
-    markers = {"last": "o", "mpp": "^", "MWPM": "D"}
+    markers = {"last": "o", "intermediate": "^", "MWPM": "D"}
 
     for method, data in results.items():
         if not data:

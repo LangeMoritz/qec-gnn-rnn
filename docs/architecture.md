@@ -11,13 +11,20 @@
 
 # Per-Round Labels & Intermediate Data
 
-## Label Modes (`args.label_mode`)
+## Training Modes
 
-### `"last"` — Final label only
+### Default (no flag) — Final label only
 - Samples from DEM, returns only the final observable flip as label `[B, 1]`
 - Loss computed on `final_prediction` from GRU's last hidden state
 
-### `"mpp"` — Per-round labels from MPP tracking (`data.py:add_mpp_to_circuit`)
+### `--intermediate` — Per-round labels + fake endings (`args.use_intermediate`)
+Combines MPP intermediate labels with fake ending detectors. Enables:
+1. MPP circuit for per-round noiseless observable labels
+2. Fake ending circuit for simulated data-qubit-measurement detectors at each round
+3. Split-layer RNN architecture for branching fake ending forward pass
+4. Weighted dual loss (fake + final)
+
+#### MPP labels (`data.py:add_mpp_to_circuit`)
 1. Insert noiseless `MPP Z_L` after each round's `MR` block
 2. Add `OBSERVABLE_INCLUDE(rec[-1], obs_k)` for round k (obs 0 = final, obs 1..R = intermediate)
 3. Shift all existing `DETECTOR` and `OBSERVABLE_INCLUDE` rec-references via `shift_rec()` to account for inserted MPP measurements
@@ -34,7 +41,7 @@ For a circuit with `rounds=t`, stim produces detector time coordinates 0 to t (t
 - Times 1..t-1: full stabilizer rounds (`d²-1` detectors each)
 - Time t: final perfect Z stabilizers (`(d²-1)/2` detectors)
 
-`"mpp"` returns `[B, t+1]` labels, one per time step.
+Intermediate mode returns `[B, t+1]` labels, one per time step.
 
 ## The Last-Round Asymmetry Problem
 
@@ -70,16 +77,19 @@ Four auxiliary loss heads:
 
 ---
 
-# Fake Endings Implementation (`args.use_fake_endings`)
+# Intermediate Data (`args.use_intermediate`)
+
+Enabled by `--intermediate` flag. Combines MPP intermediate labels with fake
+ending detectors in a single pipeline.
 
 ## Architecture: Shared-RNN with Split Layers
 
-When `use_fake_endings=True`, the single `nn.GRU(num_layers=4)` is replaced with
+When `use_intermediate=True`, the single `nn.GRU(num_layers=4)` is replaced with
 4 individual `nn.GRU(num_layers=1)` in a `ModuleList`. This exposes per-layer
 hidden states needed to branch off the fake ending path.
 
 ```
-TRAINING (use_fake_endings=True, label_mode="mpp"):
+TRAINING (use_intermediate=True):
 
   Bulk detectors → GNN → group() → [B, g_max, E]
                                         │
@@ -101,7 +111,7 @@ TRAINING (use_fake_endings=True, label_mode="mpp"):
   Loss = fake_loss_weight * BCE(predictions, flips_full)    # default 1.0
        + final_loss_weight * BCE(final_prediction, last_label)  # default 1.2
 
-INFERENCE (or use_fake_endings=True without fake data):
+INFERENCE (or use_intermediate=True without fake data):
 
   Bulk detectors → GNN → group() → Layers 1-4 → decoder(out4[:,-1,:]) → final_prediction
   (fake branch skipped entirely)
@@ -122,7 +132,7 @@ each layer in one call with `h_init` from the corresponding bulk layer output.
 - `t_local=1`: fake ending detectors at that round
 - Only non-empty chunks are included
 
-When `use_fake_endings=True` and `label_mode="mpp"`, `generate_batch()` returns
+When `use_intermediate=True`, `generate_batch()` returns
 an 8th element: `(fake_x, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr)`.
 
 ### Chunk & Label Layout (example: R=4, dt=2)
@@ -147,12 +157,12 @@ bulk detectors at t=4 (t_local=0). Both `predictions` (fake branch) and
 
 | Component | Status |
 |-----------|--------|
-| Noiseless labels (MPP) | DONE (`mpp` label mode) |
-| Split-layer RNN + fake forward pass | DONE (`use_fake_endings=True`) |
+| Noiseless labels (MPP) | DONE (`use_intermediate=True`) |
+| Split-layer RNN + fake forward pass | DONE (`use_intermediate=True`) |
 | Weighted dual loss (fake + final) | DONE (`fake_loss_weight`, `final_loss_weight`) |
 | Fake ending circuit (`add_fake_endings_to_circuit`) | DONE |
 | Fake ending data pipeline (`_build_fake_chunks`) | DONE |
-| `error_chain` label mode | REMOVED (was ~1-3% label error, replaced by `mpp`) |
+| `error_chain` label mode | REMOVED (was ~1-3% label error, replaced by MPP) |
 
 ---
 
@@ -329,7 +339,7 @@ Pass `--test` to `train_nn.py` to run evaluation after training:
 sbatch run_training.sh 3 49 2 2048 256 200 0.001 mpp baseline "" "" test
 
 # Direct:
-python examples/train_nn.py --d 3 --t 49 --dt 2 --label_mode mpp --test
+python examples/train_nn.py --d 3 --t 49 --dt 2 --intermediate --test
 ```
 
 Standalone evaluation is also available via `examples/test_nn.py`.

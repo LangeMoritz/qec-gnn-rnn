@@ -25,7 +25,7 @@ class GRUDecoder(nn.Module):
 
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
-        if args.use_fake_endings:
+        if args.use_intermediate:
             self.rnn_layers = nn.ModuleList([
                 nn.GRU(
                     args.embedding_features[-1] if i == 0 else args.hidden_size,
@@ -58,7 +58,7 @@ class GRUDecoder(nn.Module):
         bulk = group(bulk_emb, label_map, B, self.g_max, self.empty_embedding)
         # bulk shape: [B, g_max, embed_dim]
 
-        if not self.args.use_fake_endings:
+        if not self.args.use_intermediate:
             out, h = self.rnn(bulk)
             predictions = self.decoder(out).squeeze(-1)
             final_prediction = self.decoder(h[-1])
@@ -123,7 +123,7 @@ class GRUDecoder(nn.Module):
         if self.args.log_wandb:
             import pymatching
             mwpm_args = deepcopy(self.args)
-            mwpm_args.label_mode = "last"
+            mwpm_args.use_intermediate = False
             mwpm_dataset = Dataset(mwpm_args)
             dem = mwpm_dataset.circuits[0].detector_error_model(decompose_errors=True)
             matcher = pymatching.Matching.from_detector_error_model(dem)
@@ -181,12 +181,10 @@ class GRUDecoder(nn.Module):
                 else:
                     out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
 
-                if self.args.use_fake_endings and self.args.label_mode != "last" and fake_data is not None:
+                if self.args.use_intermediate and fake_data is not None:
                     fake_loss = nn.functional.binary_cross_entropy(out, flips_full, reduction='none').mean()
                     final_loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
                     loss = self.args.fake_loss_weight * fake_loss + self.args.final_loss_weight * final_loss
-                elif self.args.label_mode != "last":
-                    loss = nn.functional.binary_cross_entropy(out, flips_full)
                 else:
                     loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
 

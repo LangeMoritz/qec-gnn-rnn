@@ -9,10 +9,9 @@ import numpy as np
 from datetime import datetime
 import argparse
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --batch_size 32 --n_batches 10 --n_epochs 2
-# python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --label_mode mpp --note test_run
-# python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --label_mode last --load_path my_model
+# python examples/train_nn.py --d 3 --p 0.001 --t 49 --dt 2 --intermediate --test
+# python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --load_path my_model
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-mpp
-# python examples/train_nn.py --d 3 --p 0.001 --t 49 --dt 2 --label_mode mpp --test
 
 
 def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size):
@@ -30,7 +29,6 @@ def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size
             error_rate=args.error_rate,
             t=t,
             dt=args.dt,
-            label_mode="last",
             batch_size=test_batch_size,
             embedding_features=args.embedding_features,
             hidden_size=args.hidden_size,
@@ -80,7 +78,8 @@ if __name__ == "__main__":
     parser.add_argument('--n_batches', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=200)
     parser.add_argument('--load_path', type=str, default=None)
-    parser.add_argument('--label_mode', type=str, default='last', choices=['last', 'mpp'])
+    parser.add_argument('--intermediate', action='store_true',
+                        help='Enable intermediate labels (MPP + fake endings)')
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--wandb_project', type=str, default='GNN-RNN-google')
@@ -97,7 +96,7 @@ if __name__ == "__main__":
     t = args_cli.t
     dt = args_cli.dt
     load_path = args_cli.load_path or None  # treat empty string as None
-    label_mode = args_cli.label_mode
+    label_mode = "intermediate" if args_cli.intermediate else "last"
 
     args = Args(
         distance=d,
@@ -105,7 +104,7 @@ if __name__ == "__main__":
         t=t,
         dt=dt,
 
-        label_mode=label_mode,
+        use_intermediate=args_cli.intermediate,
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,

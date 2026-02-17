@@ -17,15 +17,15 @@ latest_model() {
 }
 
 for d in 3 5; do
-    M_LAST=$(latest_model "d${d}_p0.001_t50_dt2_last_*.pt")
-    M_MPP=$(latest_model "d${d}_p0.001_t50_dt2_mpp_*.pt")
+    M_LAST=$(latest_model "d${d}_p0.001_t*_dt2_last_*.pt")
+    M_INT=$(latest_model "d${d}_p0.001_t*_dt2_intermediate_*.pt")
 
     echo "=== d=$d ==="
-    echo "  last: $M_LAST"
-    echo "  mpp:  $M_MPP"
+    echo "  last:         $M_LAST"
+    echo "  intermediate: $M_INT"
 
     python examples/test_nn.py --d "$d" --p 0.001 \
-        --model_last "$M_LAST" \
-        --model_mpp "$M_MPP" \
+        ${M_LAST:+--model_last "$M_LAST"} \
+        ${M_INT:+--model_intermediate "$M_INT"} \
         --out "eval_d${d}_p0.001"
 done
