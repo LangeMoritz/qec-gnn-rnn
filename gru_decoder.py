@@ -95,15 +95,21 @@ class GRUDecoder(nn.Module):
 
 
     def train_model(
-            self, 
-            logger: TrainingLogger | None = None, 
-            save: str | None = None
-        ) -> None:
+            self,
+            logger: TrainingLogger | None = None,
+            save: str | None = None,
+            checkpoint_meta: dict | None = None,
+        ) -> list[dict]:
         local_log = isinstance(logger, TrainingLogger)
         best_model = self.state_dict()
+        history = []
+        meta = checkpoint_meta or {}
 
         if self.args.log_wandb:
-            wandb.init(project=self.args.wandb_project, name=save, config=self.args)
+            wandb_config = vars(self.args).copy()
+            wandb_config["loaded_from"] = meta.get("loaded_from")
+            wandb_config["load_history"] = meta.get("load_history", [])
+            wandb.init(project=self.args.wandb_project, name=save, config=wandb_config)
 
         if local_log:
             logger.on_training_begin(self.args)
@@ -210,16 +216,27 @@ class GRUDecoder(nn.Module):
             if local_log:
                 logger.on_epoch_end(logs=metrics)
 
+            history.append(metrics)
+
             if epoch_acc > best_accuracy:
                 best_accuracy = epoch_acc
+                best_model = deepcopy(self.state_dict())
                 if save:
                     os.makedirs("./models", exist_ok=True)
-                    torch.save(self.state_dict(), f"./models/{save}.pt")
-        
+                    checkpoint = {
+                        "state_dict": best_model,
+                        "args": vars(self.args),
+                        "history": history,
+                        "best_epoch": i,
+                        **meta,
+                    }
+                    torch.save(checkpoint, f"./models/{save}.pt")
+
             scheduler.step()
-            
+
         if local_log:
             logger.on_training_end()
+        return history
 
 
     def test_model(self, dataset: Dataset, n_iter=1000, verbose=True):

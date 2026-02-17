@@ -125,6 +125,24 @@ each layer in one call with `h_init` from the corresponding bulk layer output.
 When `use_fake_endings=True` and `label_mode="mpp"`, `generate_batch()` returns
 an 8th element: `(fake_x, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr)`.
 
+### Chunk & Label Layout (example: R=4, dt=2)
+
+Observables: obs 0 = final noisy logical, obs 1..4 = noiseless MPP at rounds 1..4.
+`logicals_each_round = [obs_1, obs_2, obs_3, obs_4, obs_0]` → shape `[B, 5]`.
+`flips_full = logicals_each_round[:, dt-1:]` = `[obs_2, obs_3, obs_4, obs_0]` → shape `[B, g_max=4]`.
+
+| Chunk j | Bulk times | Fake chunk (t_local) | Label |
+|---------|-----------|----------------------|-------|
+| 0 | t=0, 1 | bulk@t=1 (0) + fake@t=1.5 (1) | obs_2 (noiseless round 2) |
+| 1 | t=1, 2 | bulk@t=2 (0) + fake@t=2.5 (1) | obs_3 (noiseless round 3) |
+| 2 | t=2, 3 | bulk@t=3 (0) + fake@t=3.5 (1) | obs_4 (noiseless round 4) |
+| 3 | t=3, 4 | bulk@t=4 (0) only, no fake det | obs_0 (final noisy) |
+
+The last chunk (j=3) has no fake ending detectors because the real circuit ending
+at t=4 already provides final stabilizer detectors. Its fake chunk contains only
+bulk detectors at t=4 (t_local=0). Both `predictions` (fake branch) and
+`final_prediction` (bulk branch) produce loss against obs_0 for this chunk.
+
 ## Status
 
 | Component | Status |
@@ -255,6 +273,66 @@ Data generation is now the dominant bottleneck (88-96% on A40). Overlapping CPU 
 - NumPy RNG: `np.random.choice` uses global state — may need per-thread `Generator`
 - Tensor creation: CPU tensors in background thread, `.to(device)` in main thread
 - Expected impact: hide ~30-40s of data time behind ~3-5s of model time → near-zero data overhead
+
+---
+
+# Checkpoints, Logging & Evaluation
+
+## Model Naming
+
+Format: `d{d}_p{p}_t{t}_dt{dt}_{mode}_{date}_{run_id}[_{note}][_load_{parent_run_id}]`
+
+- **Cluster (SLURM)**: `run_id` = SLURM job ID (e.g. `12345678`)
+- **Local (MacBook)**: `run_id` = time `HHMMSS` (e.g. `102508`)
+
+When loading from a parent checkpoint, `_load_{parent_run_id}` is appended using the parent's `run_id`.
+
+## Output Files
+
+| File | Contents | When saved |
+|------|----------|------------|
+| `./models/{name}.pt` | Checkpoint: `state_dict`, `args`, `history`, `best_epoch`, `run_id`, `loaded_from`, `load_history`, `test_results` | Each new best accuracy |
+| `./logs/{name}.json` | Same as checkpoint minus weights | End of training |
+| `./stats/{name}.npy` | Numpy array: model_time, data_time, lr, loss, accuracy per epoch | End of training |
+| `logs_alvis/logs_{jobid}.out` | SLURM stdout/stderr (errors, print output) | Cluster only |
+
+## Checkpoint Format
+
+```python
+{
+    "state_dict": OrderedDict,       # model weights
+    "args": dict,                     # all hyperparameters
+    "history": [{"loss", "accuracy", "lr", "data_time", "model_time"}, ...],
+    "best_epoch": int,
+    "model_name": str,
+    "run_id": str,                    # job_id or HHMMSS
+    "loaded_from": str | None,        # parent model name
+    "load_history": [str, ...],       # chain of all ancestors
+    "slurm_job_id": str,              # only on cluster
+    "test_results": {                 # only if --test
+        t: {"mwpm": {"P_L", "std", "shots"}, "nn": {"P_L", "std", "shots"}}
+    }
+}
+```
+
+Backward compatible: old checkpoints (bare `state_dict`) are auto-detected on load.
+
+## Evaluation (`--test`)
+
+Pass `--test` to `train_nn.py` to run evaluation after training:
+- Tests NN and MWPM across round counts (default: 5, 10, 20, 50, 100, 200, 500, 1000)
+- Adaptive sampling: converges until rel_std < 1%, capped at `--test_shots` (default 1M)
+- Results saved in both checkpoint and JSON summary
+
+```bash
+# Via run_training.sh (12th arg enables test):
+sbatch run_training.sh 3 49 2 2048 256 200 0.001 mpp baseline "" "" test
+
+# Direct:
+python examples/train_nn.py --d 3 --t 49 --dt 2 --label_mode mpp --test
+```
+
+Standalone evaluation is also available via `examples/test_nn.py`.
 
 ---
 

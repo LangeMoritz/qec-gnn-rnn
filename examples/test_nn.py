@@ -139,7 +139,7 @@ def main():
 
         std_mwpm = np.sqrt(p_l * (1 - p_l) / total_shots)
         print(f"  {'MWPM':15s}  P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
-        results["MWPM"][t] = (p_l, std_mwpm)
+        results["MWPM"][t] = (p_l, std_mwpm, total_shots)
 
         # --- Evaluate NN models with the same shot count ---
         n_iter = max(1, total_shots // cli.batch_size)
@@ -148,26 +148,27 @@ def main():
                 acc, std = decoder.test_model(dataset, n_iter=n_iter, verbose=False)
             acc = float(acc)
             std = float(std)
+            nn_shots = n_iter * cli.batch_size
             p_l_nn = 1 - acc
-            print(f"  {name:15s}  P_L={p_l_nn:.6f} +/- {std:.6f} ({n_iter * cli.batch_size} shots)")
-            results[name][t] = (p_l_nn, std)
+            print(f"  {name:15s}  P_L={p_l_nn:.6f} +/- {std:.6f} ({nn_shots} shots)")
+            results[name][t] = (p_l_nn, std, nn_shots)
 
         del matcher
         print()
 
     # --- Save CSV ---
     header = "rounds," + ",".join(
-        f"{m}_PL,{m}_std" for m in results.keys()
+        f"{m}_PL,{m}_std,{m}_shots" for m in results.keys()
     )
     rows = []
     for t in rounds_list:
         row = [str(t)]
         for m in results:
             if t in results[m]:
-                p_l, std = results[m][t]
-                row.extend([f"{p_l:.8f}", f"{std:.8f}"])
+                p_l, std, shots = results[m][t]
+                row.extend([f"{p_l:.8f}", f"{std:.8f}", str(shots)])
             else:
-                row.extend(["", ""])
+                row.extend(["", "", ""])
         rows.append(",".join(row))
 
     csv_path = out_prefix + ".csv"
@@ -186,7 +187,7 @@ def main():
             continue
         ts = sorted(data.keys())
         p_ls = np.array([data[t][0] for t in ts])
-        stds = np.array([data[t][1] for t in ts])
+        stds = np.array([data[t][1] for t in ts])  # shots at index 2, not needed for plot
         ax.errorbar(
             ts, p_ls, yerr=stds,
             label=method,

@@ -3,7 +3,6 @@ import numpy as np
 import torch.nn as nn
 from torch_geometric.nn import GraphConv
 import torch
-import logging
 import time
 from typing import Dict
 StateDict = Dict[str, torch.Tensor]
@@ -141,24 +140,21 @@ class GraphConvLayer(nn.Module):
         return self.act(x)
 
 class TrainingLogger:
-    def __init__(self, logfile=None, statsfile=None):
-        if logfile:
-            os.makedirs("./logs", exist_ok=True)
-        logging.basicConfig(filename=f"./logs/{logfile}.out", level=logging.INFO, format="%(message)s")
+    def __init__(self, statsfile=None):
         self.logs = []
         self.statsfile = statsfile
-        self.best_accuracy = 0 
-    
+        self.best_accuracy = 0
+
     def on_epoch_begin(self, epoch):
         self.t0 = time.perf_counter()
         self.epoch = epoch
-        logging.info(f"EPOCH {epoch} starting")
-    
+        print(f"EPOCH {epoch} starting")
+
     def on_epoch_end(self, logs=None):
         epoch_time = time.perf_counter() - self.t0
         if logs["accuracy"] > self.best_accuracy:
             self.best_accuracy = logs["accuracy"]
-        logging.info(
+        print(
             f"EPOCH {self.epoch} finished in {epoch_time:.3f} seconds with lr = {logs['lr']:.2e}:\n"
             f"\tloss = {logs['loss']:.5f}, accuracy = {logs['accuracy']:.4f} ({self.best_accuracy:.4f})\n"
             f"\tmodel time = {logs['model_time']:.2f} seconds, "
@@ -167,8 +163,8 @@ class TrainingLogger:
         self.logs.append(logs)
 
     def on_training_begin(self, args):
-        logging.info(f"Training with t = {args.t}, dt = {args.dt}, distance = {args.distance}")
-    
+        print(f"Training with t = {args.t}, dt = {args.dt}, distance = {args.distance}")
+
     def on_training_end(self):
         stats = np.vstack((
             [logs["model_time"] for logs in self.logs],
