@@ -123,6 +123,7 @@ if __name__ == "__main__":
 
     # Track load lineage
     load_history = []
+    prior_history = []
     loaded_from = None
     decoder = GRUDecoder(args)
     if load_path is not None:
@@ -130,12 +131,15 @@ if __name__ == "__main__":
         if isinstance(ckpt, dict) and "state_dict" in ckpt:
             decoder.load_state_dict(ckpt["state_dict"])
             load_history = ckpt.get("load_history", []) + [load_path]
+            prior_history = ckpt.get("history", [])
             parent_run_id = ckpt.get("slurm_job_id") or ckpt.get("run_id", "")
         else:
             decoder.load_state_dict(ckpt)
             load_history = [load_path]
             parent_run_id = ""
         loaded_from = load_path
+        print(f"Loaded {load_path}: {len(prior_history)} prior epochs, "
+              f"resuming LR schedule from epoch {len(prior_history)}")
         # Extract run_id from filename: ..._date_runid or ..._date_runid_note
         if not parent_run_id:
             # Format: d{d}_p{p}_t{t}_dt{dt}_{mode}_{date}_{run_id}[_{note}]
@@ -154,6 +158,7 @@ if __name__ == "__main__":
         "run_id": run_id,
         "load_history": load_history,
         "loaded_from": loaded_from,
+        "prior_history": prior_history,
     }
     if job_id:
         checkpoint_meta["slurm_job_id"] = job_id

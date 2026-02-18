@@ -591,75 +591,88 @@ class Dataset:
             t_local=1: fake ending detectors at round j+dt-1
 
         Only chunks with at least one node are included in fake_label_map.
+        Vectorized: loops over unique time values (~t) instead of label_map rows (~B*g_max).
         """
         det_coords = self.detector_coordinates[sampler_idx]
-        det_times = det_coords[:, -1]  # time coordinate per bulk detector
+        det_times = det_coords[:, -1]
 
-        all_features = []
-        all_graph_labels = []  # per-node graph index (sequential, only non-empty)
-        kept_label_map = []    # label_map rows for non-empty fake chunks
-        graph_counter = 0
+        batch_indices = label_map_np[:, 0].astype(np.intp)
+        last_round_times = label_map_np[:, 1] + self.dt - 1
 
-        for row_idx in range(label_map_np.shape[0]):
-            batch_i = int(label_map_np[row_idx, 0])
-            chunk_j = int(label_map_np[row_idx, 1])
-            last_round_time = chunk_j + self.dt - 1
+        # Precompute detector indices grouped by time/round
+        dets_by_time = {}
+        for t_val in np.unique(det_times):
+            dets_by_time[int(t_val)] = np.where(det_times == t_val)[0]
+        fake_by_round = {}
+        for r_val in np.unique(self.fake_det_rounds):
+            fake_by_round[int(r_val)] = np.where(self.fake_det_rounds == r_val)[0]
 
-            # Bulk detectors at the last round of this chunk (t_local = 0)
-            bulk_fired = np.where(bulk_syndromes[batch_i])[0]
-            bulk_at_last = bulk_fired[det_times[bulk_fired] == last_round_time]
-            n_bulk = len(bulk_at_last)
+        # Collect (row_idx, feature) pairs, grouped by time for bulk numpy ops
+        all_bulk_rows, all_bulk_feats = [], []
+        all_fake_rows, all_fake_feats = [], []
 
-            # Fake ending detectors at this round (t_local = 1)
-            fake_fired = np.where(fake_syndromes[batch_i])[0]
-            fake_at_round = fake_fired[self.fake_det_rounds[fake_fired] == last_round_time]
-            n_fake = len(fake_at_round)
+        for t_val in np.unique(last_round_times):
+            rows = np.where(last_round_times == t_val)[0]
+            bi = batch_indices[rows]
 
-            n_total = n_bulk + n_fake
-            if n_total == 0:
-                continue
+            # Bulk detectors at this time
+            dets = dets_by_time.get(int(t_val))
+            if dets is not None and len(dets) > 0:
+                fired = bulk_syndromes[bi][:, dets]  # [n_rows, n_dets_at_t]
+                local_row, local_det = np.where(fired)
+                if len(local_row) > 0:
+                    all_bulk_rows.append(rows[local_row])
+                    feats = np.column_stack([
+                        det_coords[dets[local_det], :2],
+                        np.zeros(len(local_row), dtype=np.int64),
+                    ])
+                    all_bulk_feats.append(feats)
 
-            # Build features: [x, y, t_local]
-            features = np.empty((n_total, 3), dtype=np.int64)
-            if n_bulk > 0:
-                features[:n_bulk, :2] = det_coords[bulk_at_last, :2]
-                features[:n_bulk, 2] = 0
-            if n_fake > 0:
-                features[n_bulk:, :2] = self.fake_det_xy[fake_at_round]
-                features[n_bulk:, 2] = 1
+            # Fake ending detectors at this round
+            fdets = fake_by_round.get(int(t_val))
+            if fdets is not None and len(fdets) > 0:
+                fired = fake_syndromes[bi][:, fdets]
+                local_row, local_det = np.where(fired)
+                if len(local_row) > 0:
+                    all_fake_rows.append(rows[local_row])
+                    feats = np.column_stack([
+                        self.fake_det_xy[fdets[local_det]],
+                        np.ones(len(local_row), dtype=np.int64),
+                    ])
+                    all_fake_feats.append(feats)
 
-            all_features.append(features)
-            all_graph_labels.append(np.full(n_total, graph_counter, dtype=np.int64))
-            kept_label_map.append(label_map_np[row_idx])
-            graph_counter += 1
+        # Concatenate all results
+        parts_rows = [x for x in all_bulk_rows + all_fake_rows if len(x) > 0]
+        parts_feats = [x for x in all_bulk_feats + all_fake_feats if len(x) > 0]
 
-        if not all_features:
-            fake_features = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
-            fake_batch_labels = torch.zeros(0, dtype=torch.long, device=self.device)
-            fake_edge_index = torch.zeros((2, 0), dtype=torch.long, device=self.device)
-            fake_edge_attr = torch.zeros(0, dtype=torch.float32, device=self.device)
-            fake_label_map = torch.zeros((0, 2), dtype=torch.long, device=self.device)
-            return fake_features, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr
+        if not parts_rows:
+            z = lambda *s, **kw: torch.zeros(*s, device=self.device, **kw)
+            return (z((0, 3), dtype=torch.float32), z((2, 0), dtype=torch.long),
+                    z(0, dtype=torch.long), z((0, 2), dtype=torch.long),
+                    z(0, dtype=torch.float32))
 
-        coords_int = np.concatenate(all_features)
-        graph_labels_np = np.concatenate(all_graph_labels)
-        fake_lmap = np.stack(kept_label_map)
+        all_row = np.concatenate(parts_rows)
+        all_feat = np.concatenate(parts_feats)
 
-        # Build group starts/sizes from sequential graph labels
-        change = np.empty(len(graph_labels_np), dtype=bool)
-        change[0] = True
-        change[1:] = graph_labels_np[1:] != graph_labels_np[:-1]
-        group_starts = np.flatnonzero(change)
-        group_sizes = np.diff(np.append(group_starts, len(graph_labels_np)))
-        labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
+        # Sort by row index to group nodes by chunk (stable keeps bulk before fake)
+        sort_idx = np.argsort(all_row, kind='stable')
+        all_row = all_row[sort_idx]
+        all_feat = all_feat[sort_idx]
+
+        # Build groups from sorted row indices
+        unique_rows, group_starts, group_sizes = np.unique(
+            all_row, return_index=True, return_counts=True)
+        labels = np.repeat(np.arange(len(unique_rows), dtype=np.int64), group_sizes)
 
         # Compute edges
-        edge_index, edge_attr = self._compute_fc_edges(coords_int.astype(np.uint64), group_starts, group_sizes)
+        coords_int = all_feat.astype(np.uint64)
+        edge_index, edge_attr = self._compute_fc_edges(coords_int, group_starts, group_sizes)
 
         # Convert to tensors
-        fake_features = torch.from_numpy(coords_int.astype(np.float32)).to(self.device)
+        fake_features = torch.from_numpy(all_feat.astype(np.float32)).to(self.device)
         fake_batch_labels = torch.from_numpy(labels).to(self.device)
-        fake_label_map = torch.from_numpy(fake_lmap).to(dtype=torch.long, device=self.device)
+        fake_label_map = torch.from_numpy(
+            label_map_np[unique_rows]).to(dtype=torch.long, device=self.device)
         edge_index = edge_index.to(self.device)
         edge_attr = edge_attr.to(self.device)
 

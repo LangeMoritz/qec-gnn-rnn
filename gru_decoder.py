@@ -18,7 +18,6 @@ class GRUDecoder(nn.Module):
     def __init__(self, args: Args):
         super().__init__()
         self.args = args
-        self.g_max = args.t - args.dt + 2
 
         features = list(zip(args.embedding_features[:-1], args.embedding_features[1:]))
         self.embedding = nn.ModuleList([GraphConvLayer(a, b) for a, b in features])
@@ -55,7 +54,8 @@ class GRUDecoder(nn.Module):
                 fake_batch_labels=None, fake_label_map=None):
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         B = int(label_map[:, 0].max().item()) + 1
-        bulk = group(bulk_emb, label_map, B, self.g_max, self.empty_embedding)
+        g_max = int(label_map[:, 1].max().item()) + 1
+        bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
         # bulk shape: [B, g_max, embed_dim]
 
         if not self.args.use_intermediate:
@@ -77,15 +77,15 @@ class GRUDecoder(nn.Module):
 
         if fake_x is not None:
             fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels)
-            fake = group(fake_emb, fake_label_map, B, self.g_max, self.empty_embedding)
+            fake = group(fake_emb, fake_label_map, B, g_max, self.empty_embedding)
             # fake shape: [B, g_max, embed_dim]
 
             # Fake through same layers (batched single step, h_init from bulk)
-            f = fake.reshape(B * self.g_max, 1, -1)
+            f = fake.reshape(B * g_max, 1, -1)
             for i, layer in enumerate(self.rnn_layers):
-                h_init = layer_outputs[i].reshape(B * self.g_max, 1, -1).permute(1, 0, 2).contiguous()
+                h_init = layer_outputs[i].reshape(B * g_max, 1, -1).permute(1, 0, 2).contiguous()
                 f, _ = layer(f, h_init)
-            fake_out = f.reshape(B, self.g_max, -1)
+            fake_out = f.reshape(B, g_max, -1)
 
             # Override predictions with fake ending predictions
             predictions = self.decoder(fake_out).squeeze(-1)
@@ -102,8 +102,9 @@ class GRUDecoder(nn.Module):
         ) -> list[dict]:
         local_log = isinstance(logger, TrainingLogger)
         best_model = self.state_dict()
-        history = []
         meta = checkpoint_meta or {}
+        prior_history = meta.get("prior_history", [])
+        history = list(prior_history)
 
         if self.args.log_wandb:
             wandb_config = vars(self.args).copy()
@@ -151,11 +152,12 @@ class GRUDecoder(nn.Module):
             del mwpm_dataset
 
         optim = torch.optim.Adam(self.parameters(), lr=self.args.lr)
-        schedule = lambda epoch: max(0.95 ** epoch, self.args.min_lr / self.args.lr)
+        epoch_offset = len(prior_history)
+        schedule = lambda epoch: max(0.95 ** (epoch + epoch_offset), self.args.min_lr / self.args.lr)
         scheduler = LambdaLR(optim, lr_lambda=schedule)
-        best_accuracy = 0
+        best_accuracy = max((h["accuracy"] for h in prior_history), default=0)
         
-        for i in range(1, self.args.n_epochs + 1):
+        for i in range(epoch_offset + 1, epoch_offset + self.args.n_epochs + 1):
             if local_log:
                 logger.on_epoch_begin(i)
         
