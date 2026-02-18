@@ -14,7 +14,43 @@ import argparse
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-mpp
 
 
-def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size):
+def find_max_inference_batch_size(decoder, args, t):
+    """Double batch size until OOM, return largest that fits for inference at given t."""
+    # Use uncompiled model to avoid torch.compile shape constraints during probing
+    raw = getattr(decoder, '_orig_mod', decoder)
+    last_good = args.batch_size
+    while True:
+        candidate = last_good * 2
+        try:
+            test_args = Args(
+                distance=args.distance, error_rate=args.error_rate,
+                t=t, dt=args.dt, batch_size=candidate,
+                embedding_features=args.embedding_features,
+                hidden_size=args.hidden_size, n_gru_layers=args.n_gru_layers,
+            )
+            dataset = Dataset(test_args)
+            batch = dataset.generate_batch()
+            x, edge_index, batch_labels, label_map, edge_attr = batch[0], batch[1], batch[2], batch[3], batch[4]
+            if args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            with torch.no_grad():
+                raw(x, edge_index, edge_attr, batch_labels, label_map)
+            if args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            last_good = candidate
+            del dataset, batch, x, edge_index, batch_labels, label_map, edge_attr
+            if args.device.type == 'cuda':
+                torch.cuda.empty_cache()
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
+                if args.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                break
+            raise
+    return last_good
+
+
+def run_test(decoder, args, test_rounds, test_shots):
     """Run evaluation across round counts and return results dict."""
     import pymatching
     from utils import standard_deviation
@@ -23,7 +59,13 @@ def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size
     target_rel_std = 0.01
 
     for t in test_rounds:
-        print(f"--- Testing t = {t} ---")
+        # Find largest batch size that fits in memory for this t (CUDA only;
+        # MPS/CPU don't raise catchable OOM exceptions)
+        if args.device.type == 'cuda':
+            test_batch_size = find_max_inference_batch_size(decoder, args, t)
+        else:
+            test_batch_size = args.batch_size
+        print(f"--- Testing t = {t} (batch_size={test_batch_size}) ---")
         test_args = Args(
             distance=args.distance,
             error_rate=args.error_rate,
@@ -182,10 +224,9 @@ if __name__ == "__main__":
         print(f"{'='*60}\n")
         decoder.eval()
         test_results = run_test(
-            decoder, args, model_name,
+            decoder, args,
             test_rounds=args_cli.test_rounds,
             test_shots=args_cli.test_shots,
-            test_batch_size=args_cli.batch_size,
         )
 
         # Update checkpoint with test results

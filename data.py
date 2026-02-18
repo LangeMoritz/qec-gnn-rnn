@@ -881,7 +881,9 @@ def find_optimal_batch_size(args: Args, model, candidates=None):
             # Clean up gradients
             model.zero_grad(set_to_none=True)
 
-            throughput = bs / max(data_time, model_time)
+            # With prefetching, data is always ready → bottleneck is model_time
+            denom = model_time if args.prefetch else max(data_time, model_time)
+            throughput = bs / denom
             results.append((bs, data_time, model_time, throughput))
             print(f"{bs:>12} {data_time:>10.2f}s {model_time:>10.2f}s {throughput:>10.0f} s/s {'':>8}")
 
