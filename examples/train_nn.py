@@ -21,9 +21,6 @@ def find_max_inference_batch_size(decoder, args, t):
     to find the true maximum.  This handles cases where args.batch_size (tuned
     for training at a shorter t) is already too large for a longer test t.
     """
-    # Use uncompiled model to avoid torch.compile shape constraints during probing
-    raw = getattr(decoder, '_orig_mod', decoder)
-
     def probe(candidate):
         if candidate < 1:
             return False
@@ -40,7 +37,7 @@ def find_max_inference_batch_size(decoder, args, t):
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
             with torch.no_grad():
-                raw(x, edge_index, edge_attr, batch_labels, label_map)
+                decoder(x, edge_index, edge_attr, batch_labels, label_map)
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
             del dataset, batch, x, edge_index, batch_labels, label_map, edge_attr
