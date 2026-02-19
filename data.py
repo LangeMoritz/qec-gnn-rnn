@@ -340,12 +340,12 @@ class Dataset:
 
         # Fake detector coordinates: (x, y, round) from the DEM
         fake_det_coords = np.array([coords[d][-3:] for d in fake_mask])
-        fake_det_coords -= fake_det_coords.min(axis=0)
-        # Round index for each fake detector (integer part of fractional time)
+        # Round index from raw stim fractional times (0.5, 1.5, ...) before normalization
         self.fake_det_rounds = (fake_det_coords[:, -1] - 0.5).astype(int)
+        # Normalize x, y coordinates for edge weight lookup
+        fake_det_coords -= fake_det_coords.min(axis=0)
         self.fake_det_xy = fake_det_coords[:, :2].astype(np.int64)
-        rounds = int(fake_det_coords[:, -1].max() - 0.5) + 1
-        self.n_fake_per_round = len(fake_mask) // rounds  # = n_z (Z stabilizers)
+        self.n_fake_per_round = len(fake_mask) // (self.fake_det_rounds.max() + 1)  # = n_z
 
     def _precompute_edge_weights(self):
         """Precompute fully-connected edge weight matrix for chunk-local positions."""
@@ -589,9 +589,12 @@ class Dataset:
 
         For each (batch, chunk) in label_map:
           - chunk j covers bulk times [j, j+dt-1]
-          - fake chunk j contains:
-            t_local=0: bulk detectors at time j+dt-1 (last round of bulk window)
-            t_local=1: fake ending detectors at round j+dt-1
+          - fake chunk j mirrors the last real chunk structure with dt layers:
+            t_local=k (0<=k<dt-1): bulk detectors at global time j+1+k
+            t_local=dt-1:          fake ending detectors at round j+dt-1
+
+        This shift by one round relative to bulk chunk j mimics the shift of
+        the last real chunk (with its real ending) relative to the second-to-last.
 
         Only chunks with at least one node are included in fake_label_map.
         Vectorized: loops over unique time values (~t) instead of label_map rows (~B*g_max).
@@ -599,8 +602,8 @@ class Dataset:
         det_coords = self.detector_coordinates[sampler_idx]
         det_times = det_coords[:, -1]
 
+        chunk_starts = label_map_np[:, 1]          # j for each row
         batch_indices = label_map_np[:, 0].astype(np.intp)
-        last_round_times = label_map_np[:, 1] + self.dt - 1
 
         # Precompute detector indices grouped by time/round
         dets_by_time = {}
@@ -614,24 +617,29 @@ class Dataset:
         all_bulk_rows, all_bulk_feats = [], []
         all_fake_rows, all_fake_feats = [], []
 
+        # Bulk layers t_local=k for k in 0..dt-2: global time = j+1+k
+        for k in range(self.dt - 1):
+            global_times = chunk_starts + 1 + k
+            for t_val in np.unique(global_times):
+                rows = np.where(global_times == t_val)[0]
+                bi = batch_indices[rows]
+                dets = dets_by_time.get(int(t_val))
+                if dets is not None and len(dets) > 0:
+                    fired = bulk_syndromes[bi][:, dets]  # [n_rows, n_dets_at_t]
+                    local_row, local_det = np.where(fired)
+                    if len(local_row) > 0:
+                        all_bulk_rows.append(rows[local_row])
+                        feats = np.column_stack([
+                            det_coords[dets[local_det], :2],
+                            np.full(len(local_row), k, dtype=np.int64),
+                        ])
+                        all_bulk_feats.append(feats)
+
+        # Fake ending layer t_local=dt-1: global time = j+dt-1
+        last_round_times = chunk_starts + self.dt - 1
         for t_val in np.unique(last_round_times):
             rows = np.where(last_round_times == t_val)[0]
             bi = batch_indices[rows]
-
-            # Bulk detectors at this time
-            dets = dets_by_time.get(int(t_val))
-            if dets is not None and len(dets) > 0:
-                fired = bulk_syndromes[bi][:, dets]  # [n_rows, n_dets_at_t]
-                local_row, local_det = np.where(fired)
-                if len(local_row) > 0:
-                    all_bulk_rows.append(rows[local_row])
-                    feats = np.column_stack([
-                        det_coords[dets[local_det], :2],
-                        np.zeros(len(local_row), dtype=np.int64),
-                    ])
-                    all_bulk_feats.append(feats)
-
-            # Fake ending detectors at this round
             fdets = fake_by_round.get(int(t_val))
             if fdets is not None and len(fdets) > 0:
                 fired = fake_syndromes[bi][:, fdets]
@@ -640,7 +648,7 @@ class Dataset:
                     all_fake_rows.append(rows[local_row])
                     feats = np.column_stack([
                         self.fake_det_xy[fdets[local_det]],
-                        np.ones(len(local_row), dtype=np.int64),
+                        np.full(len(local_row), self.dt - 1, dtype=np.int64),
                     ])
                     all_fake_feats.append(feats)
 

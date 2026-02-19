@@ -32,6 +32,12 @@ class GRUDecoder(nn.Module):
                 )
                 for i in range(args.n_gru_layers)
             ])
+            # Separate input projection for fake-ending nodes (t_local=dt-1 in fake chunks).
+            # Bulk nodes use the standard GraphConv path; fake-ending nodes (MPP detectors,
+            # noiseless, computed from data qubits) are projected through this layer first.
+            self.fake_node_proj = nn.Linear(
+                args.embedding_features[0], args.embedding_features[0]
+            )
         else:
             self.rnn = nn.GRU(
                 args.embedding_features[-1],
@@ -44,7 +50,10 @@ class GRUDecoder(nn.Module):
             nn.Sigmoid()
         )
 
-    def embed(self, x, edge_index, edge_attr, batch_labels):
+    def embed(self, x, edge_index, edge_attr, batch_labels, fake_end_mask=None):
+        if fake_end_mask is not None:
+            x = x.clone()
+            x[fake_end_mask] = self.fake_node_proj(x[fake_end_mask])
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
@@ -76,7 +85,9 @@ class GRUDecoder(nn.Module):
         final_prediction = self.decoder(bulk_out[:, -1, :])
 
         if fake_x is not None:
-            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels)
+            fake_end_mask = (fake_x[:, 2] == (self.args.dt - 1))
+            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels,
+                                  fake_end_mask)
             fake = group(fake_emb, fake_label_map, B, g_max, self.empty_embedding)
             # fake shape: [B, g_max, embed_dim]
 

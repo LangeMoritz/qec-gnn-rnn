@@ -117,9 +117,30 @@ INFERENCE (or use_intermediate=True without fake data):
   (fake branch skipped entirely)
 ```
 
-**Key design**: Same GNN and same RNN weights process both bulk and fake data.
-The fake branch is batched: all `B*g_max` single-step fake embeddings go through
-each layer in one call with `h_init` from the corresponding bulk layer output.
+**Key design**: Same GNN backbone (GraphConv layers) and same RNN weights process both
+bulk and fake data. The only architectural separation is a small `fake_node_proj`
+linear layer applied to the MPP-based fake-ending nodes before the shared GraphConv
+layers — following AlphaQubit's use of separate input projections for the final round.
+
+### Separate GNN Projection for Fake-Ending Nodes
+
+Bulk detectors (ancilla MR measurements) and fake-ending detectors (noiseless MPP
+from data qubits) are structurally different inputs. A separate `fake_node_proj`
+linear layer (`embedding_features[0]` → `embedding_features[0]`, ~9 parameters) is
+applied to fake-ending nodes before the shared GraphConv layers:
+
+```python
+# Only for use_intermediate=True
+self.fake_node_proj = nn.Linear(embedding_features[0], embedding_features[0])
+
+# In embed(), called only for fake chunks:
+fake_end_mask = (fake_x[:, 2] == dt - 1)   # t_local == dt-1 → MPP nodes
+x[fake_end_mask] = self.fake_node_proj(x[fake_end_mask])
+# then shared GraphConv layers as normal
+```
+
+This matches AlphaQubit's design: separate `StabilizerEmbedder` linear projections
+for the final round, shared transformer/RNN backbone for everything else.
 
 ## Data Pipeline (`data.py`)
 
@@ -127,10 +148,19 @@ each layer in one call with `h_init` from the corresponding bulk layer output.
 - `n_z` noiseless Z-stabilizer MPPs + `DETECTOR`s comparing each to its `MR` (time coord = round + 0.5)
 - 1 logical-Z MPP + `OBSERVABLE_INCLUDE` (obs 1..R = intermediate logicals)
 
-`_build_fake_chunks()` constructs per-chunk fake ending graphs:
-- `t_local=0`: bulk detectors at the last round of the chunk window
-- `t_local=1`: fake ending detectors at that round
-- Only non-empty chunks are included
+`_build_fake_chunks()` constructs per-chunk fake ending graphs with `dt` layers,
+mirroring the structure of the last real chunk relative to the second-to-last:
+
+- **Bulk layers** `t_local=0..dt-2`: bulk detectors at global times `j+1, j+2, ..., j+dt-1`
+  (shifted +1 round relative to the buddy bulk chunk `j`)
+- **Fake ending layer** `t_local=dt-1`: MPP fake-ending detectors at round `j+dt-1`
+
+The +1 shift is deliberate: fake chunk `j` mimics the relationship between the last
+real chunk and the second-to-last — both are offset by one round, and both end
+with a special final-layer measurement at `t_local=dt-1`. Only non-empty chunks
+are included. The last chunk (j=g_max-1) has no MPP ending (the real circuit ending
+is already present in the bulk detectors at time t), so its fake chunk has only
+bulk layers.
 
 When `use_intermediate=True`, `generate_batch()` returns
 an 8th element: `(fake_x, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr)`.
@@ -143,15 +173,17 @@ Observables: obs 0 = final noisy logical, obs 1..4 = noiseless MPP at rounds 1..
 
 | Chunk j | Bulk times | Fake chunk (t_local) | Label |
 |---------|-----------|----------------------|-------|
-| 0 | t=0, 1 | bulk@t=1 (0) + fake@t=1.5 (1) | obs_2 (noiseless round 2) |
-| 1 | t=1, 2 | bulk@t=2 (0) + fake@t=2.5 (1) | obs_3 (noiseless round 3) |
-| 2 | t=2, 3 | bulk@t=3 (0) + fake@t=3.5 (1) | obs_4 (noiseless round 4) |
-| 3 | t=3, 4 | bulk@t=4 (0) only, no fake det | obs_0 (final noisy) |
+| 0 | t=0, 1 | bulk@t=1 (0) + fake@t=1.5 (dt-1) | obs_2 (noiseless round 2) |
+| 1 | t=1, 2 | bulk@t=2 (0) + fake@t=2.5 (dt-1) | obs_3 (noiseless round 3) |
+| 2 | t=2, 3 | bulk@t=3 (0) + fake@t=3.5 (dt-1) | obs_4 (noiseless round 4) |
+| 3 | t=3, 4 | bulk@t=4 (0) only, no MPP ending | obs_0 (final noisy) |
 
-The last chunk (j=3) has no fake ending detectors because the real circuit ending
-at t=4 already provides final stabilizer detectors. Its fake chunk contains only
-bulk detectors at t=4 (t_local=0). Both `predictions` (fake branch) and
-`final_prediction` (bulk branch) produce loss against obs_0 for this chunk.
+For dt=2 there is only one bulk layer (t_local=0) in each fake chunk; for dt=3 there
+are two bulk layers (t_local=0,1) before the MPP layer (t_local=2=dt-1), etc.
+
+The last chunk (j=3) has no fake ending because the real ending at t=4 already
+provides final stabilizer detectors in the bulk. Both `predictions` (fake branch)
+and `final_prediction` (bulk branch) produce loss against obs_0 for this chunk.
 
 ## Status
 
