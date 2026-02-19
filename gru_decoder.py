@@ -272,16 +272,17 @@ class GRUDecoder(nn.Module):
         self.eval()
         accuracy_list = torch.zeros(n_iter)
         data_time, model_time = 0, 0
-        for i in tqdm(range(n_iter), disable=verbose):
-            t0 = time.perf_counter()
-            batch = dataset.generate_batch()
-            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
-            t1 = time.perf_counter()
-            out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
-            t2 = time.perf_counter()
-            accuracy_list[i] = (torch.sum(torch.round(final_prediction) == last_label) / torch.numel(last_label)).item()
-            data_time += t1 - t0
-            model_time += t2 - t1
+        with torch.no_grad():
+            for i in tqdm(range(n_iter), disable=verbose):
+                t0 = time.perf_counter()
+                batch = dataset.generate_batch()
+                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+                t1 = time.perf_counter()
+                out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
+                t2 = time.perf_counter()
+                accuracy_list[i] = (torch.sum(torch.round(final_prediction) == last_label) / torch.numel(last_label)).item()
+                data_time += t1 - t0
+                model_time += t2 - t1
         accuracy = accuracy_list.mean()
         std = standard_deviation(accuracy, n_iter * dataset.batch_size)
         if verbose:
