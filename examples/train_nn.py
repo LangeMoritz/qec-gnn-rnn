@@ -15,12 +15,18 @@ import argparse
 
 
 def find_max_inference_batch_size(decoder, args, t):
-    """Double batch size until OOM, return largest that fits for inference at given t."""
+    """Find largest batch size that fits in memory for inference at given t.
+
+    Halves from args.batch_size until a working value is found, then doubles
+    to find the true maximum.  This handles cases where args.batch_size (tuned
+    for training at a shorter t) is already too large for a longer test t.
+    """
     # Use uncompiled model to avoid torch.compile shape constraints during probing
     raw = getattr(decoder, '_orig_mod', decoder)
-    last_good = args.batch_size
-    while True:
-        candidate = last_good * 2
+
+    def probe(candidate):
+        if candidate < 1:
+            return False
         try:
             test_args = Args(
                 distance=args.distance, error_rate=args.error_rate,
@@ -37,16 +43,29 @@ def find_max_inference_batch_size(decoder, args, t):
                 raw(x, edge_index, edge_attr, batch_labels, label_map)
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
-            last_good = candidate
             del dataset, batch, x, edge_index, batch_labels, label_map, edge_attr
             if args.device.type == 'cuda':
                 torch.cuda.empty_cache()
+            return True
         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
             if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
                 if args.device.type == 'cuda':
                     torch.cuda.empty_cache()
-                break
+                return False
             raise
+
+    # Phase 1: halve until we find a batch size that actually fits
+    candidate = args.batch_size
+    while candidate >= 1 and not probe(candidate):
+        candidate //= 2
+    if candidate < 1:
+        raise RuntimeError("Cannot fit even batch_size=1 in GPU memory")
+    last_good = candidate
+
+    # Phase 2: double to find the true maximum
+    while probe(last_good * 2):
+        last_good *= 2
+
     return last_good
 
 
