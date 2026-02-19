@@ -34,6 +34,7 @@ def find_max_inference_batch_size(decoder, args, t):
                 t=t, dt=args.dt, batch_size=candidate,
                 embedding_features=args.embedding_features,
                 hidden_size=args.hidden_size, n_gru_layers=args.n_gru_layers,
+                prefetch=False,
             )
             dataset = Dataset(test_args)
             batch = dataset.generate_batch()
@@ -95,6 +96,7 @@ def run_test(decoder, args, test_rounds, test_shots):
             embedding_features=args.embedding_features,
             hidden_size=args.hidden_size,
             n_gru_layers=args.n_gru_layers,
+            prefetch=False,
         )
         dataset = Dataset(test_args)
 
