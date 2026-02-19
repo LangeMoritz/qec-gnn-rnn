@@ -21,6 +21,10 @@ def find_max_inference_batch_size(decoder, args, t):
     to find the true maximum.  This handles cases where args.batch_size (tuned
     for training at a shorter t) is already too large for a longer test t.
     """
+    # Use uncompiled model: avoids torch.compile recompilation overhead/OOM
+    # during probing, and matches the raw model used for actual inference.
+    raw = getattr(decoder, '_orig_mod', decoder)
+
     def probe(candidate):
         if candidate < 1:
             return False
@@ -37,7 +41,7 @@ def find_max_inference_batch_size(decoder, args, t):
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
             with torch.no_grad():
-                decoder(x, edge_index, edge_attr, batch_labels, label_map)
+                raw(x, edge_index, edge_attr, batch_labels, label_map)
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
             del dataset, batch, x, edge_index, batch_labels, label_map, edge_attr
@@ -109,10 +113,11 @@ def run_test(decoder, args, test_rounds, test_shots):
         std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
         print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
 
-        # NN
+        # NN — use uncompiled model to avoid torch.compile recompilation OOM
+        raw_decoder = getattr(decoder, '_orig_mod', decoder)
         n_iter = max(1, total_shots // test_batch_size)
         with torch.no_grad():
-            acc, std = decoder.test_model(dataset, n_iter=n_iter, verbose=False)
+            acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
         p_l_nn = 1 - float(acc)
         std_nn = float(std)
         print(f"  NN     P_L={p_l_nn:.6f} +/- {std_nn:.6f} ({n_iter * test_batch_size} shots)")
