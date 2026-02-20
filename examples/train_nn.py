@@ -84,6 +84,12 @@ def run_test(decoder, args, test_rounds, test_shots):
         # MPS/CPU don't raise catchable OOM exceptions)
         if args.device.type == 'cuda':
             test_batch_size = find_max_inference_batch_size(decoder, args, t)
+            # The failed probe(2*max) frees its large tensors into PyTorch's
+            # cache *after* the except-block empty_cache() was already called,
+            # so that flush was a no-op.  Clear now so the stale cache doesn't
+            # fragment CUDA and starve the contiguous workspace allocation in
+            # the multi-layer cuDNN GRU.
+            torch.cuda.empty_cache()
         else:
             test_batch_size = args.batch_size
         print(f"--- Testing t = {t} (batch_size={test_batch_size}) ---")
