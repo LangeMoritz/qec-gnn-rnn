@@ -283,6 +283,7 @@ class GRUDecoder(nn.Module):
         self.eval()
         accuracy_list = torch.zeros(n_iter)
         data_time, model_time = 0, 0
+        use_cuda = next(self.parameters()).device.type == 'cuda'
         with torch.no_grad():
             for i in tqdm(range(n_iter), disable=verbose):
                 t0 = time.perf_counter()
@@ -294,6 +295,12 @@ class GRUDecoder(nn.Module):
                 accuracy_list[i] = (torch.sum(torch.round(final_prediction) == last_label) / torch.numel(last_label)).item()
                 data_time += t1 - t0
                 model_time += t2 - t1
+                # Release cached tensors (including the cuDNN GRU workspace) back
+                # to CUDA after each iteration.  Without this, the workspace gets
+                # cached then fragmented by subsequent bulk/output allocations,
+                # causing CUDA OOM on long sequences with the multi-layer GRU.
+                if use_cuda:
+                    torch.cuda.empty_cache()
         accuracy = accuracy_list.mean()
         std = standard_deviation(accuracy, n_iter * dataset.batch_size)
         if verbose:

@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import torch.nn as nn
 from torch_geometric.nn import GraphConv
@@ -140,9 +139,8 @@ class GraphConvLayer(nn.Module):
         return self.act(x)
 
 class TrainingLogger:
-    def __init__(self, statsfile=None):
+    def __init__(self):
         self.logs = []
-        self.statsfile = statsfile
         self.best_accuracy = 0
 
     def on_epoch_begin(self, epoch):
@@ -166,16 +164,7 @@ class TrainingLogger:
         print(f"Training with t = {args.t}, dt = {args.dt}, distance = {args.distance}")
 
     def on_training_end(self):
-        stats = np.vstack((
-            [logs["model_time"] for logs in self.logs],
-            [logs["data_time"] for logs in self.logs],
-            [logs["lr"] for logs in self.logs],
-            [logs["loss"] for logs in self.logs],
-            [logs["accuracy"] for logs in self.logs],
-        ))
-        if self.statsfile:
-            os.makedirs("./stats", exist_ok=True)
-            np.save(f"./stats/{self.statsfile}", stats)
+        pass
 
 def standard_deviation(p, n):
     """

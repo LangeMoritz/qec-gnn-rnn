@@ -240,7 +240,7 @@ if __name__ == "__main__":
     if job_id:
         checkpoint_meta["slurm_job_id"] = job_id
 
-    logger = TrainingLogger(statsfile=model_name)
+    logger = TrainingLogger()
     decoder.to(args.device)
     decoder = torch.compile(decoder)
     history = decoder.train_model(logger, save=model_name, checkpoint_meta=checkpoint_meta)
