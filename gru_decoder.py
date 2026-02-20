@@ -52,8 +52,11 @@ class GRUDecoder(nn.Module):
 
     def embed(self, x, edge_index, edge_attr, batch_labels, fake_end_mask=None):
         if fake_end_mask is not None:
-            x = x.clone()
-            x[fake_end_mask] = self.fake_node_proj(x[fake_end_mask])
+            # Use torch.where (static output shape) instead of boolean mask indexing
+            # (dynamic shape) to avoid torch.compile graph breaks and index_put_
+            # backward overhead.
+            proj = self.fake_node_proj(x)
+            x = torch.where(fake_end_mask.unsqueeze(-1), proj, x)
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
@@ -220,7 +223,10 @@ class GRUDecoder(nn.Module):
                     out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
 
                 if self.args.use_intermediate and fake_data is not None:
-                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full, reduction='none').mean()
+                    # out.shape[1] == g_max from label_map; flips_full.shape[1] == g_max from data.py
+                    # formula. They differ when the last chunk is empty for all samples in the batch
+                    # (only possible with very small batch sizes; never occurs at batch_size >= 256).
+                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full[:, :out.shape[1]], reduction='none').mean()
                     final_loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
                     loss = self.args.fake_loss_weight * fake_loss + self.args.final_loss_weight * final_loss
                 else:
