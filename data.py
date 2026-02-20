@@ -5,6 +5,9 @@ from tqdm import tqdm
 import time
 import matplotlib.pyplot as plt
 from enum import Enum
+from threading import Thread, Event
+from queue import Queue, Empty
+from copy import deepcopy
 from args import Args
 
 
@@ -337,12 +340,12 @@ class Dataset:
 
         # Fake detector coordinates: (x, y, round) from the DEM
         fake_det_coords = np.array([coords[d][-3:] for d in fake_mask])
-        fake_det_coords -= fake_det_coords.min(axis=0)
-        # Round index for each fake detector (integer part of fractional time)
+        # Round index from raw stim fractional times (0.5, 1.5, ...) before normalization
         self.fake_det_rounds = (fake_det_coords[:, -1] - 0.5).astype(int)
+        # Normalize x, y coordinates for edge weight lookup
+        fake_det_coords -= fake_det_coords.min(axis=0)
         self.fake_det_xy = fake_det_coords[:, :2].astype(np.int64)
-        rounds = int(fake_det_coords[:, -1].max() - 0.5) + 1
-        self.n_fake_per_round = len(fake_mask) // rounds  # = n_z (Z stabilizers)
+        self.n_fake_per_round = len(fake_mask) // (self.fake_det_rounds.max() + 1)  # = n_z
 
     def _precompute_edge_weights(self):
         """Precompute fully-connected edge weight matrix for chunk-local positions."""
@@ -586,9 +589,12 @@ class Dataset:
 
         For each (batch, chunk) in label_map:
           - chunk j covers bulk times [j, j+dt-1]
-          - fake chunk j contains:
-            t_local=0: bulk detectors at time j+dt-1 (last round of bulk window)
-            t_local=1: fake ending detectors at round j+dt-1
+          - fake chunk j mirrors the last real chunk structure with dt layers:
+            t_local=k (0<=k<dt-1): bulk detectors at global time j+1+k
+            t_local=dt-1:          fake ending detectors at round j+dt-1
+
+        This shift by one round relative to bulk chunk j mimics the shift of
+        the last real chunk (with its real ending) relative to the second-to-last.
 
         Only chunks with at least one node are included in fake_label_map.
         Vectorized: loops over unique time values (~t) instead of label_map rows (~B*g_max).
@@ -596,8 +602,8 @@ class Dataset:
         det_coords = self.detector_coordinates[sampler_idx]
         det_times = det_coords[:, -1]
 
+        chunk_starts = label_map_np[:, 1]          # j for each row
         batch_indices = label_map_np[:, 0].astype(np.intp)
-        last_round_times = label_map_np[:, 1] + self.dt - 1
 
         # Precompute detector indices grouped by time/round
         dets_by_time = {}
@@ -611,24 +617,29 @@ class Dataset:
         all_bulk_rows, all_bulk_feats = [], []
         all_fake_rows, all_fake_feats = [], []
 
+        # Bulk layers t_local=k for k in 0..dt-2: global time = j+1+k
+        for k in range(self.dt - 1):
+            global_times = chunk_starts + 1 + k
+            for t_val in np.unique(global_times):
+                rows = np.where(global_times == t_val)[0]
+                bi = batch_indices[rows]
+                dets = dets_by_time.get(int(t_val))
+                if dets is not None and len(dets) > 0:
+                    fired = bulk_syndromes[bi][:, dets]  # [n_rows, n_dets_at_t]
+                    local_row, local_det = np.where(fired)
+                    if len(local_row) > 0:
+                        all_bulk_rows.append(rows[local_row])
+                        feats = np.column_stack([
+                            det_coords[dets[local_det], :2],
+                            np.full(len(local_row), k, dtype=np.int64),
+                        ])
+                        all_bulk_feats.append(feats)
+
+        # Fake ending layer t_local=dt-1: global time = j+dt-1
+        last_round_times = chunk_starts + self.dt - 1
         for t_val in np.unique(last_round_times):
             rows = np.where(last_round_times == t_val)[0]
             bi = batch_indices[rows]
-
-            # Bulk detectors at this time
-            dets = dets_by_time.get(int(t_val))
-            if dets is not None and len(dets) > 0:
-                fired = bulk_syndromes[bi][:, dets]  # [n_rows, n_dets_at_t]
-                local_row, local_det = np.where(fired)
-                if len(local_row) > 0:
-                    all_bulk_rows.append(rows[local_row])
-                    feats = np.column_stack([
-                        det_coords[dets[local_det], :2],
-                        np.zeros(len(local_row), dtype=np.int64),
-                    ])
-                    all_bulk_feats.append(feats)
-
-            # Fake ending detectors at this round
             fdets = fake_by_round.get(int(t_val))
             if fdets is not None and len(fdets) > 0:
                 fired = fake_syndromes[bi][:, fdets]
@@ -637,7 +648,7 @@ class Dataset:
                     all_fake_rows.append(rows[local_row])
                     feats = np.column_stack([
                         self.fake_det_xy[fdets[local_det]],
-                        np.ones(len(local_row), dtype=np.int64),
+                        np.full(len(local_row), self.dt - 1, dtype=np.int64),
                     ])
                     all_fake_feats.append(feats)
 
@@ -767,3 +778,145 @@ class Dataset:
         ax.scatter(z_stabs[1], z_stabs[0], min_t, c="green", alpha=0.3, s=50, label="Z stabilizers")
         plt.legend()
         plt.show()
+
+
+class BatchPrefetcher:
+    """Producer-consumer prefetcher with its own Dataset instance (thread safety).
+
+    Runs generate_batch() in a background thread while the main thread
+    processes the current batch on GPU. numpy C operations release the GIL,
+    so the heavy parts (FC edges, sliding window) get real parallelism.
+    """
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = Dataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        """Start prefetching n_batches in a background thread."""
+        self._stop.clear()
+        # Drain any leftover items from previous epoch
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        """Signal the background thread to stop and drain the queue."""
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+def find_optimal_batch_size(args: Args, model, candidates=None):
+    """Warmup: try batch sizes, measure throughput, pick best.
+
+    For each candidate batch_size:
+      1. Generate one batch → data_time
+      2. Forward + backward pass → model_time
+      3. throughput = batch_size / max(data_time, model_time)
+    OOM stops the search at larger sizes.
+
+    Returns the optimal batch_size.
+    """
+    import torch.nn as nn
+
+    if candidates is None:
+        candidates = [512, 1024, 2048, 4096, 8192, 16384]
+
+    results = []
+    print(f"\n{'='*60}")
+    print(f"Auto batch size tuning ({args.device})")
+    print(f"{'='*60}")
+    print(f"{'batch_size':>12} {'data_time':>10} {'model_time':>11} {'throughput':>12} {'status':>8}")
+    print(f"{'-'*60}")
+
+    for bs in candidates:
+        trial_args = deepcopy(args)
+        trial_args.batch_size = bs
+
+        try:
+            # Data generation timing
+            dataset = Dataset(trial_args)
+            t0 = time.perf_counter()
+            batch = dataset.generate_batch()
+            data_time = time.perf_counter() - t0
+
+            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+            fake_data = batch[7] if len(batch) > 7 else None
+
+            # Model forward + backward timing
+            model.train()
+            if hasattr(torch.cuda, 'synchronize') and args.device.type == 'cuda':
+                torch.cuda.synchronize()
+
+            t0 = time.perf_counter()
+            if fake_data is not None:
+                fx, fe_idx, fb_labels, fl_map, fe_attr = fake_data
+                out, final_prediction = model(
+                    x, edge_index, edge_attr, batch_labels, label_map,
+                    fx, fe_idx, fe_attr, fb_labels, fl_map)
+            else:
+                out, final_prediction = model(x, edge_index, edge_attr, batch_labels, label_map)
+
+            loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
+            loss.backward()
+
+            if hasattr(torch.cuda, 'synchronize') and args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            model_time = time.perf_counter() - t0
+
+            # Clean up gradients
+            model.zero_grad(set_to_none=True)
+
+            # With prefetching, data is always ready → bottleneck is model_time
+            denom = model_time if args.prefetch else max(data_time, model_time)
+            throughput = bs / denom
+            results.append((bs, data_time, model_time, throughput))
+            print(f"{bs:>12} {data_time:>10.2f}s {model_time:>10.2f}s {throughput:>10.0f} s/s {'':>8}")
+
+            del batch, dataset, x, edge_index, batch_labels, label_map, edge_attr
+            del last_label, flips_full, out, final_prediction, loss
+            if fake_data is not None:
+                del fx, fe_idx, fb_labels, fl_map, fe_attr, fake_data
+            if args.device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
+                print(f"{bs:>12} {'':>10} {'':>11} {'':>12} {'OOM':>8}")
+                if args.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                break
+            raise
+
+    if not results:
+        print(f"All candidates OOM, keeping batch_size={args.batch_size}")
+        print(f"{'='*60}\n")
+        return args.batch_size
+
+    best_bs, _, _, best_tp = max(results, key=lambda r: r[3])
+    print(f"{'-'*60}")
+    print(f"Winner: batch_size={best_bs} ({best_tp:.0f} samples/sec)")
+    print(f"{'='*60}\n")
+    return best_bs

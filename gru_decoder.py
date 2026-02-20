@@ -1,6 +1,6 @@
 import torch, time, os
 import torch.nn as nn
-from data import Dataset
+from data import Dataset, BatchPrefetcher, find_optimal_batch_size
 from args import Args
 from utils import GraphConvLayer, TrainingLogger, group, standard_deviation
 from torch_geometric.nn import global_mean_pool
@@ -32,6 +32,12 @@ class GRUDecoder(nn.Module):
                 )
                 for i in range(args.n_gru_layers)
             ])
+            # Separate input projection for fake-ending nodes (t_local=dt-1 in fake chunks).
+            # Bulk nodes use the standard GraphConv path; fake-ending nodes (MPP detectors,
+            # noiseless, computed from data qubits) are projected through this layer first.
+            self.fake_node_proj = nn.Linear(
+                args.embedding_features[0], args.embedding_features[0]
+            )
         else:
             self.rnn = nn.GRU(
                 args.embedding_features[-1],
@@ -44,7 +50,13 @@ class GRUDecoder(nn.Module):
             nn.Sigmoid()
         )
 
-    def embed(self, x, edge_index, edge_attr, batch_labels):
+    def embed(self, x, edge_index, edge_attr, batch_labels, fake_end_mask=None):
+        if fake_end_mask is not None:
+            # Use torch.where (static output shape) instead of boolean mask indexing
+            # (dynamic shape) to avoid torch.compile graph breaks and index_put_
+            # backward overhead.
+            proj = self.fake_node_proj(x)
+            x = torch.where(fake_end_mask.unsqueeze(-1), proj, x)
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
@@ -76,7 +88,9 @@ class GRUDecoder(nn.Module):
         final_prediction = self.decoder(bulk_out[:, -1, :])
 
         if fake_x is not None:
-            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels)
+            fake_end_mask = (fake_x[:, 2] == (self.args.dt - 1))
+            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels,
+                                  fake_end_mask)
             fake = group(fake_emb, fake_label_map, B, g_max, self.empty_embedding)
             # fake shape: [B, g_max, embed_dim]
 
@@ -116,6 +130,18 @@ class GRUDecoder(nn.Module):
             logger.on_training_begin(self.args)
         
         self.train()
+
+        # Auto batch size tuning (CUDA only, before dataset creation)
+        if self.args.auto_batch_size and self.args.device.type == "cuda":
+            original_total = self.args.batch_size * self.args.n_batches
+            optimal_bs = find_optimal_batch_size(self.args, self)
+            if optimal_bs != self.args.batch_size:
+                print(f"Auto-tuned batch_size: {self.args.batch_size} → {optimal_bs}")
+                self.args.batch_size = optimal_bs
+                self.args.n_batches = max(1, original_total // optimal_bs)
+                print(f"Adjusted n_batches: {self.args.n_batches} "
+                      f"(total samples/epoch: {self.args.batch_size * self.args.n_batches})")
+
         dataset = Dataset(self.args)
 
         # Compute MWPM baseline accuracy once for wandb reference line.
@@ -156,21 +182,34 @@ class GRUDecoder(nn.Module):
         schedule = lambda epoch: max(0.95 ** (epoch + epoch_offset), self.args.min_lr / self.args.lr)
         scheduler = LambdaLR(optim, lr_lambda=schedule)
         best_accuracy = max((h["accuracy"] for h in prior_history), default=0)
-        
+
+        # Set up prefetcher or direct dataset
+        use_prefetch = self.args.prefetch
+        prefetcher = BatchPrefetcher(self.args, queue_size=2) if use_prefetch else None
+
         for i in range(epoch_offset + 1, epoch_offset + self.args.n_epochs + 1):
             if local_log:
                 logger.on_epoch_begin(i)
-        
+
             epoch_loss = 0
             epoch_acc = 0
             data_time = 0
             model_time = 0
-        
-            for _ in range(self.args.n_batches):
+
+            if use_prefetch:
+                prefetcher.start(self.args.n_batches)
+                batch_iter = iter(prefetcher)
+            else:
+                batch_iter = range(self.args.n_batches)
+
+            for batch_or_idx in batch_iter:
                 optim.zero_grad()
 
                 t0 = time.perf_counter()
-                batch = dataset.generate_batch()
+                if use_prefetch:
+                    batch = batch_or_idx  # already generated
+                else:
+                    batch = dataset.generate_batch()
                 x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
                 fake_data = batch[7] if len(batch) > 7 else None
 
@@ -184,7 +223,10 @@ class GRUDecoder(nn.Module):
                     out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
 
                 if self.args.use_intermediate and fake_data is not None:
-                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full, reduction='none').mean()
+                    # out.shape[1] == g_max from label_map; flips_full.shape[1] == g_max from data.py
+                    # formula. They differ when the last chunk is empty for all samples in the batch
+                    # (only possible with very small batch sizes; never occurs at batch_size >= 256).
+                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full[:, :out.shape[1]], reduction='none').mean()
                     final_loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
                     loss = self.args.fake_loss_weight * fake_loss + self.args.final_loss_weight * final_loss
                 else:
@@ -247,16 +289,24 @@ class GRUDecoder(nn.Module):
         self.eval()
         accuracy_list = torch.zeros(n_iter)
         data_time, model_time = 0, 0
-        for i in tqdm(range(n_iter), disable=verbose):
-            t0 = time.perf_counter()
-            batch = dataset.generate_batch()
-            x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
-            t1 = time.perf_counter()
-            out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
-            t2 = time.perf_counter()
-            accuracy_list[i] = (torch.sum(torch.round(final_prediction) == last_label) / torch.numel(last_label)).item()
-            data_time += t1 - t0
-            model_time += t2 - t1
+        use_cuda = next(self.parameters()).device.type == 'cuda'
+        with torch.no_grad():
+            for i in tqdm(range(n_iter), disable=verbose):
+                t0 = time.perf_counter()
+                batch = dataset.generate_batch()
+                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+                t1 = time.perf_counter()
+                out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
+                t2 = time.perf_counter()
+                accuracy_list[i] = (torch.sum(torch.round(final_prediction) == last_label) / torch.numel(last_label)).item()
+                data_time += t1 - t0
+                model_time += t2 - t1
+                # Release cached tensors (including the cuDNN GRU workspace) back
+                # to CUDA after each iteration.  Without this, the workspace gets
+                # cached then fragmented by subsequent bulk/output allocations,
+                # causing CUDA OOM on long sequences with the multi-layer GRU.
+                if use_cuda:
+                    torch.cuda.empty_cache()
         accuracy = accuracy_list.mean()
         std = standard_deviation(accuracy, n_iter * dataset.batch_size)
         if verbose:

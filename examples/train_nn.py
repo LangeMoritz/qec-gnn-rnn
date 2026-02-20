@@ -14,7 +14,64 @@ import argparse
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-mpp
 
 
-def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size):
+def find_max_inference_batch_size(decoder, args, t):
+    """Find largest batch size that fits in memory for inference at given t.
+
+    Halves from args.batch_size until a working value is found, then doubles
+    to find the true maximum.  This handles cases where args.batch_size (tuned
+    for training at a shorter t) is already too large for a longer test t.
+    """
+    # Use uncompiled model: avoids torch.compile recompilation overhead/OOM
+    # during probing, and matches the raw model used for actual inference.
+    raw = getattr(decoder, '_orig_mod', decoder)
+
+    def probe(candidate):
+        if candidate < 1:
+            return False
+        try:
+            test_args = Args(
+                distance=args.distance, error_rate=args.error_rate,
+                t=t, dt=args.dt, batch_size=candidate,
+                embedding_features=args.embedding_features,
+                hidden_size=args.hidden_size, n_gru_layers=args.n_gru_layers,
+                prefetch=False,
+            )
+            dataset = Dataset(test_args)
+            batch = dataset.generate_batch()
+            x, edge_index, batch_labels, label_map, edge_attr = batch[0], batch[1], batch[2], batch[3], batch[4]
+            if args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            with torch.no_grad():
+                raw(x, edge_index, edge_attr, batch_labels, label_map)
+            if args.device.type == 'cuda':
+                torch.cuda.synchronize()
+            del dataset, batch, x, edge_index, batch_labels, label_map, edge_attr
+            if args.device.type == 'cuda':
+                torch.cuda.empty_cache()
+            return True
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
+                if args.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                return False
+            raise
+
+    # Phase 1: halve until we find a batch size that actually fits
+    candidate = args.batch_size
+    while candidate >= 1 and not probe(candidate):
+        candidate //= 2
+    if candidate < 1:
+        raise RuntimeError("Cannot fit even batch_size=1 in GPU memory")
+    last_good = candidate
+
+    # Phase 2: double to find the true maximum
+    while probe(last_good * 2):
+        last_good *= 2
+
+    return last_good
+
+
+def run_test(decoder, args, test_rounds, test_shots):
     """Run evaluation across round counts and return results dict."""
     import pymatching
     from utils import standard_deviation
@@ -23,7 +80,19 @@ def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size
     target_rel_std = 0.01
 
     for t in test_rounds:
-        print(f"--- Testing t = {t} ---")
+        # Find largest batch size that fits in memory for this t (CUDA only;
+        # MPS/CPU don't raise catchable OOM exceptions)
+        if args.device.type == 'cuda':
+            test_batch_size = find_max_inference_batch_size(decoder, args, t)
+            # The failed probe(2*max) frees its large tensors into PyTorch's
+            # cache *after* the except-block empty_cache() was already called,
+            # so that flush was a no-op.  Clear now so the stale cache doesn't
+            # fragment CUDA and starve the contiguous workspace allocation in
+            # the multi-layer cuDNN GRU.
+            torch.cuda.empty_cache()
+        else:
+            test_batch_size = args.batch_size
+        print(f"--- Testing t = {t} (batch_size={test_batch_size}) ---")
         test_args = Args(
             distance=args.distance,
             error_rate=args.error_rate,
@@ -33,6 +102,7 @@ def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size
             embedding_features=args.embedding_features,
             hidden_size=args.hidden_size,
             n_gru_layers=args.n_gru_layers,
+            prefetch=False,
         )
         dataset = Dataset(test_args)
 
@@ -51,10 +121,11 @@ def run_test(decoder, args, model_name, test_rounds, test_shots, test_batch_size
         std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
         print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
 
-        # NN
+        # NN — use uncompiled model to avoid torch.compile recompilation OOM
+        raw_decoder = getattr(decoder, '_orig_mod', decoder)
         n_iter = max(1, total_shots // test_batch_size)
         with torch.no_grad():
-            acc, std = decoder.test_model(dataset, n_iter=n_iter, verbose=False)
+            acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
         p_l_nn = 1 - float(acc)
         std_nn = float(std)
         print(f"  NN     P_L={p_l_nn:.6f} +/- {std_nn:.6f} ({n_iter * test_batch_size} shots)")
@@ -88,6 +159,10 @@ if __name__ == "__main__":
     parser.add_argument('--test_rounds', type=int, nargs='+',
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument('--test_shots', type=int, default=1_000_000)
+    parser.add_argument('--auto_batch_size', action='store_true',
+                        help='Auto-tune batch_size at training start (CUDA only)')
+    parser.add_argument('--no_prefetch', action='store_true',
+                        help='Disable background data prefetching')
 
     args_cli = parser.parse_args()
 
@@ -112,7 +187,9 @@ if __name__ == "__main__":
         hidden_size=512,
         n_gru_layers=4,
         log_wandb=args_cli.wandb,
-        wandb_project=args_cli.wandb_project
+        wandb_project=args_cli.wandb_project,
+        prefetch=not args_cli.no_prefetch,
+        auto_batch_size=args_cli.auto_batch_size,
     )
     date = datetime.now().strftime("%y%m%d")
     job_id = os.environ.get("SLURM_JOB_ID", "")
@@ -163,7 +240,7 @@ if __name__ == "__main__":
     if job_id:
         checkpoint_meta["slurm_job_id"] = job_id
 
-    logger = TrainingLogger(statsfile=model_name)
+    logger = TrainingLogger()
     decoder.to(args.device)
     decoder = torch.compile(decoder)
     history = decoder.train_model(logger, save=model_name, checkpoint_meta=checkpoint_meta)
@@ -176,10 +253,9 @@ if __name__ == "__main__":
         print(f"{'='*60}\n")
         decoder.eval()
         test_results = run_test(
-            decoder, args, model_name,
+            decoder, args,
             test_rounds=args_cli.test_rounds,
             test_shots=args_cli.test_shots,
-            test_batch_size=args_cli.batch_size,
         )
 
         # Update checkpoint with test results

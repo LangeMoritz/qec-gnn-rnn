@@ -117,9 +117,30 @@ INFERENCE (or use_intermediate=True without fake data):
   (fake branch skipped entirely)
 ```
 
-**Key design**: Same GNN and same RNN weights process both bulk and fake data.
-The fake branch is batched: all `B*g_max` single-step fake embeddings go through
-each layer in one call with `h_init` from the corresponding bulk layer output.
+**Key design**: Same GNN backbone (GraphConv layers) and same RNN weights process both
+bulk and fake data. The only architectural separation is a small `fake_node_proj`
+linear layer applied to the MPP-based fake-ending nodes before the shared GraphConv
+layers — following AlphaQubit's use of separate input projections for the final round.
+
+### Separate GNN Projection for Fake-Ending Nodes
+
+Bulk detectors (ancilla MR measurements) and fake-ending detectors (noiseless MPP
+from data qubits) are structurally different inputs. A separate `fake_node_proj`
+linear layer (`embedding_features[0]` → `embedding_features[0]`, ~9 parameters) is
+applied to fake-ending nodes before the shared GraphConv layers:
+
+```python
+# Only for use_intermediate=True
+self.fake_node_proj = nn.Linear(embedding_features[0], embedding_features[0])
+
+# In embed(), called only for fake chunks:
+fake_end_mask = (fake_x[:, 2] == dt - 1)   # t_local == dt-1 → MPP nodes
+x[fake_end_mask] = self.fake_node_proj(x[fake_end_mask])
+# then shared GraphConv layers as normal
+```
+
+This matches AlphaQubit's design: separate `StabilizerEmbedder` linear projections
+for the final round, shared transformer/RNN backbone for everything else.
 
 ## Data Pipeline (`data.py`)
 
@@ -127,10 +148,19 @@ each layer in one call with `h_init` from the corresponding bulk layer output.
 - `n_z` noiseless Z-stabilizer MPPs + `DETECTOR`s comparing each to its `MR` (time coord = round + 0.5)
 - 1 logical-Z MPP + `OBSERVABLE_INCLUDE` (obs 1..R = intermediate logicals)
 
-`_build_fake_chunks()` constructs per-chunk fake ending graphs:
-- `t_local=0`: bulk detectors at the last round of the chunk window
-- `t_local=1`: fake ending detectors at that round
-- Only non-empty chunks are included
+`_build_fake_chunks()` constructs per-chunk fake ending graphs with `dt` layers,
+mirroring the structure of the last real chunk relative to the second-to-last:
+
+- **Bulk layers** `t_local=0..dt-2`: bulk detectors at global times `j+1, j+2, ..., j+dt-1`
+  (shifted +1 round relative to the buddy bulk chunk `j`)
+- **Fake ending layer** `t_local=dt-1`: MPP fake-ending detectors at round `j+dt-1`
+
+The +1 shift is deliberate: fake chunk `j` mimics the relationship between the last
+real chunk and the second-to-last — both are offset by one round, and both end
+with a special final-layer measurement at `t_local=dt-1`. Only non-empty chunks
+are included. The last chunk (j=g_max-1) has no MPP ending (the real circuit ending
+is already present in the bulk detectors at time t), so its fake chunk has only
+bulk layers.
 
 When `use_intermediate=True`, `generate_batch()` returns
 an 8th element: `(fake_x, fake_edge_index, fake_batch_labels, fake_label_map, fake_edge_attr)`.
@@ -143,15 +173,17 @@ Observables: obs 0 = final noisy logical, obs 1..4 = noiseless MPP at rounds 1..
 
 | Chunk j | Bulk times | Fake chunk (t_local) | Label |
 |---------|-----------|----------------------|-------|
-| 0 | t=0, 1 | bulk@t=1 (0) + fake@t=1.5 (1) | obs_2 (noiseless round 2) |
-| 1 | t=1, 2 | bulk@t=2 (0) + fake@t=2.5 (1) | obs_3 (noiseless round 3) |
-| 2 | t=2, 3 | bulk@t=3 (0) + fake@t=3.5 (1) | obs_4 (noiseless round 4) |
-| 3 | t=3, 4 | bulk@t=4 (0) only, no fake det | obs_0 (final noisy) |
+| 0 | t=0, 1 | bulk@t=1 (0) + fake@t=1.5 (dt-1) | obs_2 (noiseless round 2) |
+| 1 | t=1, 2 | bulk@t=2 (0) + fake@t=2.5 (dt-1) | obs_3 (noiseless round 3) |
+| 2 | t=2, 3 | bulk@t=3 (0) + fake@t=3.5 (dt-1) | obs_4 (noiseless round 4) |
+| 3 | t=3, 4 | bulk@t=4 (0) only, no MPP ending | obs_0 (final noisy) |
 
-The last chunk (j=3) has no fake ending detectors because the real circuit ending
-at t=4 already provides final stabilizer detectors. Its fake chunk contains only
-bulk detectors at t=4 (t_local=0). Both `predictions` (fake branch) and
-`final_prediction` (bulk branch) produce loss against obs_0 for this chunk.
+For dt=2 there is only one bulk layer (t_local=0) in each fake chunk; for dt=3 there
+are two bulk layers (t_local=0,1) before the MPP layer (t_local=2=dt-1), etc.
+
+The last chunk (j=3) has no fake ending because the real ending at t=4 already
+provides final stabilizer detectors in the bulk. Both `predictions` (fake branch)
+and `final_prediction` (bulk branch) produce loss against obs_0 for this chunk.
 
 ## Status
 
@@ -264,25 +296,40 @@ On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x
 | d=5 last | 167 | 48 | 3.5x |
 | d=5 mpp | 186 | 49 | 3.8x |
 
-## Next: Background Data Prefetch
+## Background Data Prefetch (DONE)
 
-Data generation is now the dominant bottleneck (88-96% on A40). Overlapping CPU data generation with GPU forward/backward would hide most of this cost.
+`BatchPrefetcher` (`data.py`) overlaps CPU data generation with GPU forward/backward using a producer-consumer pattern:
 
-### Approach
-- `threading.Thread` or `concurrent.futures.ThreadPoolExecutor`
-- While GPU runs forward+backward on batch N, CPU generates batch N+1
-- Python GIL is released during stim/numpy C extensions → true parallelism
-- Edge computation is pure numpy, GIL-friendly
+- **Own Dataset instance**: Each prefetcher creates its own `Dataset` for thread safety (stim samplers have internal state)
+- **Queue-based**: `Queue(maxsize=2)` — background thread fills, main thread consumes
+- **GIL-friendly**: numpy C operations (FC edges, sliding window) release the GIL → real parallelism
+- **Sentinel-based**: `None` signals end of epoch; queue is drained between epochs
 
-### Files to modify
-- `gru_decoder.py:train_model()` — wrap batch loop with prefetch logic
-- Possibly `data.py:generate_batch()` — ensure thread safety (stim samplers, numpy RNG)
+Enabled by default (`--no_prefetch` to disable). With prefetch, `data_time` in epoch logs measures only the queue wait time (time GPU was idle waiting for data), not total data generation time.
 
-### Considerations
-- Stim samplers: thread-safe if each thread uses its own sampler (one per Dataset)
-- NumPy RNG: `np.random.choice` uses global state — may need per-thread `Generator`
-- Tensor creation: CPU tensors in background thread, `.to(device)` in main thread
-- Expected impact: hide ~30-40s of data time behind ~3-5s of model time → near-zero data overhead
+Expected impact: hide ~model_time per epoch (3-8s), since data >> model the overlap saves ~10-15%.
+
+## Auto Batch Size Tuning (DONE)
+
+`find_optimal_batch_size()` (`data.py`) runs at training start when `--auto_batch_size` is passed (CUDA only):
+
+1. For each candidate batch_size `[512, 1024, 2048, 4096, 8192, 16384]`:
+   - Generate one batch → `data_time`
+   - Forward + backward pass → `model_time`
+   - `throughput = batch_size / max(data_time, model_time)`
+2. OOM stops the search at larger sizes
+3. Picks the candidate with highest throughput
+4. Scales `n_batches` inversely to keep total samples/epoch constant
+
+Warmup cost: ~30-60s (6 candidates × ~5-10s each). The bigger lever is **batch_size**: larger batches amortize per-batch Python overhead in graph construction and keep the GPU busier per step.
+
+```bash
+# Auto-tune example:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
+
+# Disable prefetch:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
+```
 
 ---
 
