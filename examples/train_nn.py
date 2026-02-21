@@ -84,11 +84,15 @@ def run_test(decoder, args, test_rounds, test_shots):
         # MPS/CPU don't raise catchable OOM exceptions)
         if args.device.type == 'cuda':
             test_batch_size = find_max_inference_batch_size(decoder, args, t)
-            # The failed probe(2*max) frees its large tensors into PyTorch's
-            # cache *after* the except-block empty_cache() was already called,
-            # so that flush was a no-op.  Clear now so the stale cache doesn't
-            # fragment CUDA and starve the contiguous workspace allocation in
-            # the multi-layer cuDNN GRU.
+            # The multi-layer cuDNN GRU (last mode) reserves O(n_layers * B * seq *
+            # hidden) memory in one contiguous block — n_layers× more than the
+            # single-layer GRUs used by intermediate mode.  The probe runs in
+            # relatively clean memory and may find a batch size whose reserve
+            # exhausts fragmented memory during the actual test.  Dividing by
+            # n_gru_layers brings the peak reservation in line with what the probe
+            # actually observed, at the cost of 1/n_layers throughput.
+            if not args.use_intermediate:
+                test_batch_size = max(1, test_batch_size // args.n_gru_layers)
             torch.cuda.empty_cache()
         else:
             test_batch_size = args.batch_size

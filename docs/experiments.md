@@ -116,3 +116,42 @@ sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-tim
 - **Separate GNN projection for fake nodes** (`new_fake_chunks`): no improvement over `ctrl_fake_endings` at t≥50; slightly better at t<50 but still worse than `last`. Not worth the 3× data generation overhead (~50s vs ~18s per epoch).
 - **Both intermediate modes diverge at t>500**: longer sequences than seen at training cause the fake-branch decoder to extrapolate poorly. `last` mode is more robust here due to direct BPTT from the final position.
 - **Root cause of short-t failure**: model trains at t=50 only; `decoder(bulk_out[:, -1, :])` is always position 49. At test t<50, the last position j<49 was never trained as a direct final predictor — only as a fake-branch intermediate context. Fix: sample t uniformly from {5,10,20,50} per batch during training.
+
+## Experiment 5: Full Comparison — last vs. intermediate across all distances (2026-02-20)
+
+**Goal**: Scale the controlled comparison from Experiment 4 to all three code distances (d=3/5/7) with 5× more training epochs, to establish whether intermediate labels / fake endings yield a consistent advantage and whether the short-t failure persists across distances.
+
+| Parameter | Value |
+|-----------|-------|
+| Distances | 3, 5, 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| Batch size | 2048 |
+| Batches | 256 |
+| Epochs | 500 |
+| Error rate (p) | 0.001 |
+| GPU | A40 |
+| Cluster | Alvis (NAISS2025-5-525) |
+
+**Commands**:
+```bash
+sbatch run_training.sh 3 50 2 2048 256 500 0.001 '' '' '' GNN-RNN-train-all-times test
+sbatch run_training.sh 3 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-times test
+sbatch run_training.sh 5 50 2 2048 256 500 0.001 '' '' '' GNN-RNN-train-all-times test
+sbatch run_training.sh 5 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-times test
+sbatch run_training.sh 7 50 2 2048 256 500 0.001 '' '' '' GNN-RNN-train-all-times test
+sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-times test
+```
+
+**Expected runtimes** (estimated from Exp 3 + Exp 4):
+
+| Run | Estimated runtime | Notes |
+|-----|-------------------|-------|
+| d=3 last | ~6h | Exp 4: 1.26h/100 epochs → 6.3h |
+| d=3 int | ~10h | Exp 4: 2.08h/100 epochs → 10.4h |
+| d=5 last | ~18h | ~3× d=3 data scaling |
+| d=5 int | ~30h | ~3× d=3 data scaling |
+| d=7 last | ~40h | ~6–8× d=3 data scaling |
+| d=7 int | ~55h | ~6–8× d=3 data scaling; may approach 3-day wall |
+
+**Results**: _(pending)_
