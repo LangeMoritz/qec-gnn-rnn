@@ -118,29 +118,42 @@ INFERENCE (or use_intermediate=True without fake data):
 ```
 
 **Key design**: Same GNN backbone (GraphConv layers) and same RNN weights process both
-bulk and fake data. The only architectural separation is a small `fake_node_proj`
-linear layer applied to the MPP-based fake-ending nodes before the shared GraphConv
-layers — following AlphaQubit's use of separate input projections for the final round.
+bulk and fake data. Separation between regular rounds and terminal measurements happens
+after global_mean_pool via two tiny post-pooling MLPs.
 
-### Separate GNN Projection for Fake-Ending Nodes
+### Post-Pooling Projections: `real_proj` and `end_proj`
 
-Bulk detectors (ancilla MR measurements) and fake-ending detectors (noiseless MPP
-from data qubits) are structurally different inputs. A separate `fake_node_proj`
-linear layer (`embedding_features[0]` → `embedding_features[0]`, ~9 parameters) is
-applied to fake-ending nodes before the shared GraphConv layers:
+After the shared GraphConv stack pools each chunk to a single `embed_dim` vector,
+two separate MLPs (`Linear(embed_dim, embed_dim) + ReLU`) specialise the embedding
+for the GRU:
+
+- **`real_proj`**: intermediate bulk rounds (positions 0..g_max-2)
+- **`end_proj`**: terminal measurements — the final real chunk (position g_max-1,
+  both modes) and all fake-ending chunks (`intermediate` mode)
+
+This applies in both `last` and `intermediate` modes. The motivation: the last real
+chunk is structurally different from intermediate rounds — it is the terminal
+measurement on which the decoder is directly supervised — just as fake-ending chunks
+are terminal measurements at their respective positions.
 
 ```python
-# Only for use_intermediate=True
-self.fake_node_proj = nn.Linear(embedding_features[0], embedding_features[0])
+# Always present (both modes)
+embed_dim = args.embedding_features[-1]
+self.real_proj = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU())
+self.end_proj  = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU())
 
-# In embed(), called only for fake chunks:
-fake_end_mask = (fake_x[:, 2] == dt - 1)   # t_local == dt-1 → MPP nodes
-x[fake_end_mask] = self.fake_node_proj(x[fake_end_mask])
-# then shared GraphConv layers as normal
+# _group_bulk(): last position → end_proj, all others → real_proj
+# torch.where used for static shapes (no compile graph breaks)
+is_end = (label_map[:, 1] == g_max - 1)
+proj_emb = torch.where(is_end.unsqueeze(-1), end_proj(raw_emb), real_proj(raw_emb))
+
+# Fake chunks (intermediate mode): all go through end_proj
+fake_emb = end_proj(self.embed(fake_x, ...))
 ```
 
-This matches AlphaQubit's design: separate `StabilizerEmbedder` linear projections
-for the final round, shared transformer/RNN backbone for everything else.
+Empty chunks (no fired detectors) also diverge: `real_proj(empty_embedding)` fills
+empty bulk positions, `end_proj(empty_embedding)` fills the terminal position and
+empty fake positions. No separate learnable empty parameters are needed.
 
 ## Data Pipeline (`data.py`)
 

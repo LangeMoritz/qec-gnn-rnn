@@ -24,6 +24,17 @@ class GRUDecoder(nn.Module):
 
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
+        # Post-pooling projections: real_proj for intermediate bulk rounds,
+        # end_proj for terminal measurements — the final real chunk (both modes)
+        # and all fake-ending chunks (intermediate mode). Both share the same
+        # GraphConv backbone; the split happens after global_mean_pool so the
+        # full embed_dim representation is transformed. Empty chunks (no fired
+        # detectors) also diverge: the two MLPs specialise empty_embedding
+        # into distinct no-event tokens for each context.
+        embed_dim = args.embedding_features[-1]
+        self.real_proj = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU())
+        self.end_proj  = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU())
+
         if args.use_intermediate:
             self.rnn_layers = nn.ModuleList([
                 nn.GRU(
@@ -32,12 +43,6 @@ class GRUDecoder(nn.Module):
                 )
                 for i in range(args.n_gru_layers)
             ])
-            # Separate input projection for fake-ending nodes (t_local=dt-1 in fake chunks).
-            # Bulk nodes use the standard GraphConv path; fake-ending nodes (MPP detectors,
-            # noiseless, computed from data qubits) are projected through this layer first.
-            self.fake_node_proj = nn.Linear(
-                args.embedding_features[0], args.embedding_features[0]
-            )
         else:
             self.rnn = nn.GRU(
                 args.embedding_features[-1],
@@ -50,24 +55,37 @@ class GRUDecoder(nn.Module):
             nn.Sigmoid()
         )
 
-    def embed(self, x, edge_index, edge_attr, batch_labels, fake_end_mask=None):
-        if fake_end_mask is not None:
-            # Use torch.where (static output shape) instead of boolean mask indexing
-            # (dynamic shape) to avoid torch.compile graph breaks and index_put_
-            # backward overhead.
-            proj = self.fake_node_proj(x)
-            x = torch.where(fake_end_mask.unsqueeze(-1), proj, x)
+    def embed(self, x, edge_index, edge_attr, batch_labels):
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
 
+    def _group_bulk(self, raw_emb, label_map, B, g_max):
+        """Project and group bulk chunks into [B, g_max, embed_dim].
+
+        Position g_max-1 (terminal real chunk) goes through end_proj;
+        all other positions go through real_proj. Empty slots are filled
+        with the corresponding MLP's transformation of empty_embedding.
+        Uses torch.where for static output shapes (no compile graph breaks).
+        """
+        is_end = (label_map[:, 1] == g_max - 1)
+        proj_emb = torch.where(
+            is_end.unsqueeze(-1), self.end_proj(raw_emb), self.real_proj(raw_emb)
+        )
+        empty_real = self.real_proj(self.empty_embedding)
+        empty_end  = self.end_proj(self.empty_embedding)
+        bulk = empty_real.view(1, 1, -1).expand(B, g_max, -1).clone()
+        bulk[:, -1, :] = empty_end
+        bulk[label_map[:, 0], label_map[:, 1]] = proj_emb
+        return bulk
+
     def forward(self, x, edge_index, edge_attr, batch_labels, label_map,
                 fake_x=None, fake_edge_index=None, fake_edge_attr=None,
                 fake_batch_labels=None, fake_label_map=None):
-        bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
+        raw_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         B = int(label_map[:, 0].max().item()) + 1
         g_max = int(label_map[:, 1].max().item()) + 1
-        bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+        bulk = self._group_bulk(raw_emb, label_map, B, g_max)
         # bulk shape: [B, g_max, embed_dim]
 
         if not self.args.use_intermediate:
@@ -88,10 +106,10 @@ class GRUDecoder(nn.Module):
         final_prediction = self.decoder(bulk_out[:, -1, :])
 
         if fake_x is not None:
-            fake_end_mask = (fake_x[:, 2] == (self.args.dt - 1))
-            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels,
-                                  fake_end_mask)
-            fake = group(fake_emb, fake_label_map, B, g_max, self.empty_embedding)
+            fake_raw_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels)
+            fake_emb = self.end_proj(fake_raw_emb)
+            empty_end = self.end_proj(self.empty_embedding)
+            fake = group(fake_emb, fake_label_map, B, g_max, empty_end)
             # fake shape: [B, g_max, embed_dim]
 
             # Fake through same layers (batched single step, h_init from bulk)
