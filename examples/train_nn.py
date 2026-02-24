@@ -14,23 +14,29 @@ import argparse
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-train-all-times
 
 
-def find_max_inference_batch_size(decoder, args, t):
+def find_max_inference_batch_size(decoder, args, t, error_rate=None):
     """Find largest batch size that fits in memory for inference at given t.
 
     Halves from args.batch_size until a working value is found, then doubles
     to find the true maximum.  This handles cases where args.batch_size (tuned
     for training at a shorter t) is already too large for a longer test t.
+
+    error_rate: probe with this error rate (use max p for worst-case sizing).
+                Defaults to max(args.error_rates) or args.error_rate.
     """
     # Use uncompiled model: avoids torch.compile recompilation overhead/OOM
     # during probing, and matches the raw model used for actual inference.
     raw = getattr(decoder, '_orig_mod', decoder)
+    probe_p = error_rate if error_rate is not None else (
+        max(args.error_rates) if args.error_rates else args.error_rate
+    )
 
     def probe(candidate):
         if candidate < 1:
             return False
         try:
             test_args = Args(
-                distance=args.distance, error_rate=args.error_rate,
+                distance=args.distance, error_rate=probe_p,
                 t=t, dt=args.dt, batch_size=candidate,
                 embedding_features=args.embedding_features,
                 hidden_size=args.hidden_size, n_gru_layers=args.n_gru_layers,
@@ -72,69 +78,79 @@ def find_max_inference_batch_size(decoder, args, t):
 
 
 def run_test(decoder, args, test_rounds, test_shots):
-    """Run evaluation across round counts and return results dict."""
+    """Run evaluation across round counts and error rates, return results dict.
+
+    Returns: {p: {t: {"mwpm": {...}, "nn": {...}}}}
+    """
     import pymatching
     from utils import standard_deviation
 
-    results = {}
+    error_rates = args.error_rates if args.error_rates else [args.error_rate]
     target_rel_std = 0.01
+    results = {}
 
-    for t in test_rounds:
-        # Find largest batch size that fits in memory for this t (CUDA only;
-        # MPS/CPU don't raise catchable OOM exceptions)
-        if args.device.type == 'cuda':
-            test_batch_size = find_max_inference_batch_size(decoder, args, t)
-            # The multi-layer cuDNN GRU reserves O(n_layers * B * seq * hidden)
-            # memory in one contiguous block.  The probe runs in clean memory and
-            # may find a batch size that exhausts fragmented memory during the
-            # actual test.  Dividing by n_gru_layers keeps peak usage in line.
-            test_batch_size = max(1, test_batch_size // args.n_gru_layers)
-            torch.cuda.empty_cache()
-        else:
-            test_batch_size = args.batch_size
-        print(f"--- Testing t = {t} (batch_size={test_batch_size}) ---")
-        test_args = Args(
-            distance=args.distance,
-            error_rate=args.error_rate,
-            t=t,
-            dt=args.dt,
-            batch_size=test_batch_size,
-            embedding_features=args.embedding_features,
-            hidden_size=args.hidden_size,
-            n_gru_layers=args.n_gru_layers,
-            prefetch=False,
-        )
-        dataset = Dataset(test_args)
+    for p in error_rates:
+        results[p] = {}
+        print(f"\n{'='*60}")
+        print(f"  Error rate p = {p}")
+        print(f"{'='*60}")
 
-        # MWPM
-        dem = dataset.circuits[0].detector_error_model(decompose_errors=True)
-        matcher = pymatching.Matching.from_detector_error_model(dem)
-        total_correct, total_shots = 0, 0
-        while total_shots < test_shots:
-            det_events, flips = dataset.sample_syndromes(0)
-            preds = matcher.decode_batch(det_events)
-            total_correct += int(np.sum(preds == flips))
-            total_shots += test_batch_size
-            p_l = 1 - total_correct / total_shots
-            if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
-                break
-        std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
-        print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
+        for t in test_rounds:
+            # Find largest batch size that fits in memory for this (p, t).
+            # Probe with the current p so sizing is exact for each rate.
+            if args.device.type == 'cuda':
+                test_batch_size = find_max_inference_batch_size(decoder, args, t, error_rate=p)
+                # The multi-layer cuDNN GRU reserves O(n_layers * B * seq * hidden)
+                # memory in one contiguous block.  The probe runs in clean memory and
+                # may find a batch size that exhausts fragmented memory during the
+                # actual test.  Dividing by n_gru_layers keeps peak usage in line.
+                test_batch_size = max(1, test_batch_size // args.n_gru_layers)
+                torch.cuda.empty_cache()
+            else:
+                test_batch_size = args.batch_size
+            print(f"\n--- Testing p={p}, t={t} (batch_size={test_batch_size}) ---")
+            test_args = Args(
+                distance=args.distance,
+                error_rate=p,
+                t=t,
+                dt=args.dt,
+                batch_size=test_batch_size,
+                embedding_features=args.embedding_features,
+                hidden_size=args.hidden_size,
+                n_gru_layers=args.n_gru_layers,
+                prefetch=False,
+            )
+            dataset = Dataset(test_args)
 
-        # NN — use uncompiled model to avoid torch.compile recompilation OOM
-        raw_decoder = getattr(decoder, '_orig_mod', decoder)
-        n_iter = max(1, total_shots // test_batch_size)
-        with torch.no_grad():
-            acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
-        p_l_nn = 1 - float(acc)
-        std_nn = float(std)
-        print(f"  NN     P_L={p_l_nn:.6f} +/- {std_nn:.6f} ({n_iter * test_batch_size} shots)")
+            # MWPM
+            dem = dataset.circuits[0].detector_error_model(decompose_errors=True)
+            matcher = pymatching.Matching.from_detector_error_model(dem)
+            total_correct, total_shots = 0, 0
+            while total_shots < test_shots:
+                det_events, flips = dataset.sample_syndromes(0)
+                preds = matcher.decode_batch(det_events)
+                total_correct += int(np.sum(preds == flips))
+                total_shots += test_batch_size
+                p_l = 1 - total_correct / total_shots
+                if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
+                    break
+            std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
+            print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
 
-        results[t] = {
-            "mwpm": {"P_L": float(p_l), "std": std_mwpm, "shots": total_shots},
-            "nn": {"P_L": p_l_nn, "std": std_nn, "shots": n_iter * test_batch_size},
-        }
-        del matcher
+            # NN — use uncompiled model to avoid torch.compile recompilation OOM
+            raw_decoder = getattr(decoder, '_orig_mod', decoder)
+            n_iter = max(1, total_shots // test_batch_size)
+            with torch.no_grad():
+                acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
+            p_l_nn = 1 - float(acc)
+            std_nn = float(std)
+            print(f"  NN     P_L={p_l_nn:.6f} +/- {std_nn:.6f} ({n_iter * test_batch_size} shots)")
+
+            results[p][t] = {
+                "mwpm": {"P_L": float(p_l), "std": std_mwpm, "shots": total_shots},
+                "nn": {"P_L": p_l_nn, "std": std_nn, "shots": n_iter * test_batch_size},
+            }
+            del matcher
 
     return results
 
@@ -143,6 +159,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--d', type=int, default=5)
     parser.add_argument('--p', type=float, default=0.001)
+    parser.add_argument('--p_list', type=float, nargs='+', default=None,
+                        help='Train/test on a mix of error rates, e.g. --p_list 0.001 0.002 0.003 0.004 0.005'
+                             ' (overrides --p for training; --p still used for model naming)')
     parser.add_argument('--t', type=int, default=50)
     parser.add_argument('--dt', type=int, default=2)
     parser.add_argument('--batch_size', type=int, default=2048)
@@ -173,13 +192,14 @@ if __name__ == "__main__":
     args = Args(
         distance=d,
         error_rate=p,
+        error_rates=sorted(args_cli.p_list) if args_cli.p_list else None,
         t=t,
         dt=dt,
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,
-        embedding_features=[3, 32, 64, 128, 256, 512],
-        hidden_size=512,
+        embedding_features=[3, 64, 256],
+        hidden_size=256,
         n_gru_layers=4,
         log_wandb=args_cli.wandb,
         wandb_project=args_cli.wandb_project,
@@ -277,7 +297,12 @@ if __name__ == "__main__":
     if job_id:
         summary["slurm_job_id"] = job_id
     if test_results:
-        summary["test_results"] = {str(k): v for k, v in test_results.items()}
+        # Flatten nested {p: {t: ...}} → {"p{p}_t{t}": ...} isn't needed;
+        # just ensure all dict keys are strings for JSON compatibility.
+        summary["test_results"] = {
+            str(p): {str(t): v for t, v in tv.items()}
+            for p, tv in test_results.items()
+        }
     with open(f"./logs/{model_name}.json", "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Saved summary log: ./logs/{model_name}.json")

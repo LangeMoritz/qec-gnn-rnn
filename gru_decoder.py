@@ -91,35 +91,45 @@ class GRUDecoder(nn.Module):
         dataset = Dataset(self.args)
 
         # Compute MWPM baseline accuracy once for wandb reference line.
+        # For multi-p training, averages P_L across all error rates.
         # Adaptively samples until std/P_L < 1%, capped at max_shots.
         mwpm_accuracy = None
         if self.args.log_wandb:
             import pymatching
-            mwpm_dataset = Dataset(deepcopy(self.args))
-            dem = mwpm_dataset.circuits[0].detector_error_model(decompose_errors=True)
-            matcher = pymatching.Matching.from_detector_error_model(dem)
-
-            total_correct = 0
-            total_shots = 0
+            error_rates = self.args.error_rates if self.args.error_rates else [self.args.error_rate]
             max_shots = 10_000_000
             target_rel_std = 0.01
-            while total_shots < max_shots:
-                det_events, flips = mwpm_dataset.sample_syndromes(0)
-                preds = matcher.decode_batch(det_events)
-                total_correct += int(np.sum(preds == flips))
-                total_shots += mwpm_args.batch_size
-                p_l = 1 - total_correct / total_shots
-                if p_l > 0:
-                    rel_std = np.sqrt((1 - p_l) / (p_l * total_shots))
-                    if rel_std < target_rel_std:
-                        break
+            mwpm_p_ls = []
+            for er in error_rates:
+                mwpm_args = deepcopy(self.args)
+                mwpm_args.error_rates = None
+                mwpm_args.error_rate = er
+                mwpm_dataset = Dataset(mwpm_args)
+                dem = mwpm_dataset.circuits[0].detector_error_model(decompose_errors=True)
+                matcher = pymatching.Matching.from_detector_error_model(dem)
 
-            mwpm_accuracy = total_correct / total_shots
-            p_l = 1 - mwpm_accuracy
-            std = np.sqrt(p_l * (1 - p_l) / total_shots)
-            print(f"MWPM baseline: acc={mwpm_accuracy:.6f}, "
-                  f"P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
-            del mwpm_dataset
+                total_correct = 0
+                total_shots = 0
+                while total_shots < max_shots:
+                    det_events, flips = mwpm_dataset.sample_syndromes(0)
+                    preds = matcher.decode_batch(det_events)
+                    total_correct += int(np.sum(preds == flips))
+                    total_shots += self.args.batch_size
+                    p_l = 1 - total_correct / total_shots
+                    if p_l > 0:
+                        rel_std = np.sqrt((1 - p_l) / (p_l * total_shots))
+                        if rel_std < target_rel_std:
+                            break
+
+                std = np.sqrt(p_l * (1 - p_l) / total_shots)
+                print(f"MWPM baseline p={er}: acc={total_correct/total_shots:.6f}, "
+                      f"P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
+                mwpm_p_ls.append(p_l)
+                del mwpm_dataset
+
+            avg_p_l = float(np.mean(mwpm_p_ls))
+            mwpm_accuracy = 1 - avg_p_l
+            print(f"MWPM baseline avg P_L={avg_p_l:.6f} (across {len(error_rates)} error rates)")
 
         optim = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         epoch_offset = len(prior_history)

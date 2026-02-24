@@ -83,8 +83,8 @@ def main():
                 dt=cli.dt,
                 use_intermediate=intermediate,
                 batch_size=cli.batch_size,
-                embedding_features=[3, 32, 64, 128, 256, 512],
-                hidden_size=512,
+                embedding_features=[3, 64, 256],
+                hidden_size=256,
                 n_gru_layers=4,
             )
             print(f"Loading {name} model from {path}")

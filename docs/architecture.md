@@ -393,6 +393,100 @@ Standalone evaluation is also available via `examples/test_nn.py`.
 
 ---
 
+# Hierarchical Multi-Scale Decoder (Future)
+
+## Concept
+
+Train a small model on d=3 codes, then recursively compose it into decoders for
+larger distances. At each level, a lower-level model processes spatial patches and
+produces a single embedding per patch per round; those embeddings become nodes for
+the next-level GNN+GRU.
+
+```
+Level 0: d=3 model
+  8 stabilizers → GNN → pool → 1 embedding per round
+
+Level 1: d=7 model
+  d=7 lattice ≈ 2×2 grid of ~d=3 patches
+  Each patch → frozen d=3 GNN → pool → 1 node
+  4 nodes/round → meta-GNN → meta-GRU → prediction
+
+Level 2: d=15 model
+  d=15 lattice ≈ 2×2 grid of ~d=7 patches
+  Each patch → frozen d=7 stack → 1 node
+  4 nodes/round → meta-GNN → meta-GRU → prediction
+
+  ...
+```
+
+The sequence follows d_{n+1} = 2*d_n + 1: 3 → 7 → 15 → 31 → ...
+
+## Geometry
+
+The rotated surface code stabilizer counts:
+- d=3: 8 stabilizers; d=7: 48; d=15: 224; d=31: 960
+- Each level ≈ 4× the patch count of the previous (48/8=6, close enough)
+
+Spatial partition: divide the d=7 lattice into four ~d=3-sized quadrants.
+Boundary stabilizers (shared between patches) need a convention — assign to one
+patch or split/replicate. The boundary handling is the main geometric subtlety.
+
+## Model Architecture per Level
+
+Each level has the same structure; only the GNN changes:
+
+| Level | GNN input | GNN | hidden_size | n_gru_layers |
+|-------|-----------|-----|-------------|--------------|
+| d=3 | raw detectors | `[3, 64, 256]` (2 layers) | 256 | 4 |
+| d=7 | 4 patch embeddings (256-dim) | meta-GNN (TBD) | 256+ | 4+ |
+| d=15 | 4 patch embeddings | meta-GNN (TBD) | decide then | decide then |
+
+The GRU and decoder head are **not frozen** between levels — the meta-GNN produces
+embeddings with a different distribution than the lower-level GNN, so the GRU
+must be retrained. Its architecture (hidden_size, n_gru_layers) can be freely
+chosen at each level; there is no constraint forcing them to match across levels.
+The only hard constraint is that the GRU input dim equals `embedding_features[-1]`.
+
+A warm-start from the lower level's GRU weights is possible as long as the
+architecture matches, and may help if the meta-GNN learns to produce embeddings
+in a similar latent space.
+
+## Training Strategy
+
+1. Train d=3 model fully (small model, fast iterations). Current config: `[3, 64,
+   256]`, `hidden_size=256`, `n_gru_layers=4`. Trained on p=0.001–0.005 mix.
+2. Build d=7 meta-model:
+   - Freeze d=3 GNN weights.
+   - Add a meta-GNN on the 4-node graph of patch embeddings.
+   - Train meta-GNN + new GRU + new decoder from scratch (optionally warm-start GRU).
+3. Repeat for d=15: freeze d=7 stack, train d=15 meta layer.
+
+Only one new GNN layer is added per scale. Total trainable parameters at each
+level stay small even as code distance grows exponentially.
+
+## Connection to Renormalization Group
+
+This is a learned RG decoder: each level coarse-grains the error pattern by pooling
+local syndrome graphs into single-site representations, then a higher-level model
+decodes residual long-range correlations. The frozen lower levels implement the
+short-range part of the decoder.
+
+## Key Open Questions
+
+- **Boundary stabilizers**: how to assign stabilizers on patch boundaries (replicate,
+  halve weights, or train a separate boundary embedding)?
+- **Pooling function**: global mean pool works for d=3; learnable pooling
+  (e.g. attention-weighted) might better capture which region matters most.
+- **Temporal alignment**: the GRU sequences at each level must be synchronized —
+  each meta-node at round r comes from pooling round r of its patch.
+- **Long-range errors**: hook errors spanning a patch boundary are invisible to the
+  lower level and must be decoded by the meta-GNN. The meta-graph needs edges
+  between adjacent patches.
+- **Exact distance tiling**: d=7 doesn't split into four exact d=3 codes; patch
+  models are applied to sub-graphs, not independent sub-codes.
+
+---
+
 # p_ij DEM Generation from Google Data
 
 ## Goal

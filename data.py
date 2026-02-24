@@ -29,6 +29,7 @@ class Dataset:
     def __init__(self, args: Args, flip: FlipType = FlipType.BIT):
         self.device = args.device
         self.error_rate = args.error_rate
+        self.error_rates = args.error_rates if args.error_rates else [args.error_rate]
         self.batch_size = args.batch_size
         self.t = args.t
         self.dt = args.dt
@@ -47,38 +48,46 @@ class Dataset:
         self.__init_circuit()
 
     def __init_circuit(self):
-        """Initializes circuits and samplers."""
-        circuit = stim.Circuit.generated(
-            self.code_task,
-            distance=self.distance,
-            rounds=self.t,
-            after_clifford_depolarization=self.error_rate,
-            after_reset_flip_probability=self.error_rate,
-            before_measure_flip_probability=self.error_rate,
-            before_round_data_depolarization=self.error_rate,
-        )
-        self.circuits = [circuit]
-        self.dem = [circuit.detector_error_model()]
+        """Initializes circuits and samplers for all error rates."""
+        self.circuits = []
+        self.dem = []
+        for er in self.error_rates:
+            circuit = stim.Circuit.generated(
+                self.code_task,
+                distance=self.distance,
+                rounds=self.t,
+                after_clifford_depolarization=er,
+                after_reset_flip_probability=er,
+                before_measure_flip_probability=er,
+                before_round_data_depolarization=er,
+            )
+            self.circuits.append(circuit)
+            self.dem.append(circuit.detector_error_model())
 
-        # DEM sampler (used by "last" mode)
+        # DEM sampler (one per error rate)
         self.samplers = [dem.compile_sampler(seed=self.seed) for dem in self.dem]
 
-        # Detector coordinates (always needed for graph construction)
-        self.detector_coordinates = []
-        self._sampler_t = []
-        for dem in self.dem:
-            coordinates = dem.get_detector_coordinates()
-            detector_coordinates = np.array([v[-3:] for v in coordinates.values()])
-            detector_coordinates -= detector_coordinates.min(axis=0)
-            self.detector_coordinates.append(detector_coordinates.astype(np.int64))
-            self._sampler_t.append(int(detector_coordinates[:, -1].max()))
+        # Detector coordinates are the same for all error rates (same d, t, dt).
+        # Compute once from the first DEM and replicate references.
+        coordinates = self.dem[0].get_detector_coordinates()
+        base_coords = np.array([v[-3:] for v in coordinates.values()])
+        base_coords -= base_coords.min(axis=0)
+        base_coords = base_coords.astype(np.int64)
+        sampler_t = int(base_coords[:, -1].max())
+        self.detector_coordinates = [base_coords] * len(self.error_rates)
+        self._sampler_t = [sampler_t] * len(self.error_rates)
 
-        # Estimate acceptance rate (fraction of shots with ≥1 detection event)
-        pilot = self.samplers[0].sample(shots=min(10000, self.batch_size * 3))
-        n_accept = np.count_nonzero(np.any(pilot[0], axis=1))
-        self._accept_rate = max(n_accept / pilot[0].shape[0], 0.05)
+        # Per-sampler acceptance rate (fraction of shots with ≥1 detection event).
+        # Higher p → more detection events → higher accept rate; lowest p is worst case.
+        self._accept_rates = []
+        for sampler in self.samplers:
+            pilot = sampler.sample(shots=min(10000, self.batch_size * 3))
+            n_accept = np.count_nonzero(np.any(pilot[0], axis=1))
+            self._accept_rates.append(max(n_accept / pilot[0].shape[0], 0.05))
+        # Backward-compat alias (used by callers that only ever use sampler 0)
+        self._accept_rate = self._accept_rates[0]
 
-        # Precompute fully-connected edge weight matrix
+        # Precompute fully-connected edge weight matrix (same for all error rates)
         self._precompute_edge_weights()
 
     def _precompute_edge_weights(self):
@@ -115,8 +124,9 @@ class Dataset:
     def _sample_last(self, sampler_idx: int):
         """Sample from DEM, return only final logical label."""
         sampler = self.samplers[sampler_idx]
+        accept_rate = self._accept_rates[sampler_idx]
         detection_events_list, observable_flips_list = [], []
-        n_draw = int(self.batch_size / self._accept_rate * 1.1) + 1
+        n_draw = int(self.batch_size / accept_rate * 1.1) + 1
         while len(detection_events_list) < self.batch_size:
             detection_events, observable_flips, _ = sampler.sample(shots=n_draw)
             mask = np.any(detection_events, axis=1)
@@ -401,6 +411,10 @@ def find_optimal_batch_size(args: Args, model, candidates=None):
     for bs in candidates:
         trial_args = deepcopy(args)
         trial_args.batch_size = bs
+        # Probe with worst-case error rate (largest graphs → tightest memory bound)
+        if trial_args.error_rates:
+            trial_args.error_rate = max(trial_args.error_rates)
+            trial_args.error_rates = None
 
         try:
             # Data generation timing

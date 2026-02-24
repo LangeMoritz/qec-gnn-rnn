@@ -4,8 +4,9 @@ import torch
 @dataclass
 class Args:
 
-    # Stim 
+    # Stim
     error_rate: float = 0.001
+    error_rates: list[float] | None = None  # if set, train on mix of error rates
     t: int = 50
     dt: int = 2
     distance: int = 5
@@ -28,8 +29,8 @@ class Args:
     auto_batch_size: bool = False    # auto-tune batch_size at training start
 
     # Model
-    embedding_features: list = field(default_factory=lambda: [3, 32, 64, 128, 256])
-    hidden_size: int = 128 
+    embedding_features: list = field(default_factory=lambda: [3, 64, 256])
+    hidden_size: int = 256
     n_gru_layers: int = 4
     log_wandb: bool = False
     wandb_project: str = "GNN-RNN-google"
