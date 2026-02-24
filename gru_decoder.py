@@ -44,7 +44,8 @@ class GRUDecoder(nn.Module):
     def forward(self, x, edge_index, edge_attr, batch_labels, label_map):
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         B = int(label_map[:, 0].max().item()) + 1
-        bulk = group(bulk_emb, label_map, B, self.g_max, self.empty_embedding)
+        g_max = int(label_map[:, 1].max().item()) + 1
+        bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
         # bulk shape: [B, g_max, embed_dim]
 
         out, h = self.rnn(bulk)
