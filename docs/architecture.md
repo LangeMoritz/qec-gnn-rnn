@@ -1,11 +1,25 @@
 # Architecture & Design
 
 ## Table of Contents
+- [Active Branches](#active-branches)
 - [Per-Round Labels & Intermediate Data](#per-round-labels--intermediate-data)
 - [Fake Endings Implementation](#fake-endings-implementation)
 - [GNN-RNN Architecture](#gnn-rnn-architecture)
 - [Training Speed Optimization](#training-speed-optimization)
 - [p_ij DEM Generation from Google Data](#p_ij-dem-generation-from-google-data)
+
+---
+
+# Active Branches
+
+| Branch | Status | Purpose | Key changes |
+|--------|--------|---------|-------------|
+| `main` | base | Stable baseline | Full training pipeline, fake endings, multi-p |
+| `dual-proj-mlp` | active experiments | Separate GNN projection MLPs for real vs fake-ending nodes | Replaces single `fake_node_proj` with `real_proj` + `end_proj` post-pooling |
+| `iterative-decoding` | active experiments | Multi-p training + small d=3 model + hierarchical decoder design | Trains jointly on p=0.001–0.005; `--small` flag for d=3 tiny model |
+| `google-data` | active experiments | SI1000 noise model support for Google experimental circuits | Loads pre-generated circuits from `circuits_ZXXZ/`; `--si1000` flag |
+
+**Merge order**: `dual-proj-mlp` and `iterative-decoding` are independent feature branches off `main`. `google-data` adds noise model support and should merge after the other two are evaluated.
 
 ---
 
