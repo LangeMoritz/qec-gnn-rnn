@@ -18,92 +18,38 @@ class GRUDecoder(nn.Module):
     def __init__(self, args: Args):
         super().__init__()
         self.args = args
+        self.g_max = args.t - args.dt + 2
 
         features = list(zip(args.embedding_features[:-1], args.embedding_features[1:]))
         self.embedding = nn.ModuleList([GraphConvLayer(a, b) for a, b in features])
 
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
-        if args.use_intermediate:
-            self.rnn_layers = nn.ModuleList([
-                nn.GRU(
-                    args.embedding_features[-1] if i == 0 else args.hidden_size,
-                    args.hidden_size, num_layers=1, batch_first=True
-                )
-                for i in range(args.n_gru_layers)
-            ])
-            # Separate input projection for fake-ending nodes (t_local=dt-1 in fake chunks).
-            # Bulk nodes use the standard GraphConv path; fake-ending nodes (MPP detectors,
-            # noiseless, computed from data qubits) are projected through this layer first.
-            self.fake_node_proj = nn.Linear(
-                args.embedding_features[0], args.embedding_features[0]
-            )
-        else:
-            self.rnn = nn.GRU(
-                args.embedding_features[-1],
-                args.hidden_size, num_layers=args.n_gru_layers,
-                batch_first=True
-            )
+        self.rnn = nn.GRU(
+            args.embedding_features[-1],
+            args.hidden_size, num_layers=args.n_gru_layers,
+            batch_first=True
+        )
 
         self.decoder = nn.Sequential(
             nn.Linear(args.hidden_size, 1),
             nn.Sigmoid()
         )
 
-    def embed(self, x, edge_index, edge_attr, batch_labels, fake_end_mask=None):
-        if fake_end_mask is not None:
-            # Use torch.where (static output shape) instead of boolean mask indexing
-            # (dynamic shape) to avoid torch.compile graph breaks and index_put_
-            # backward overhead.
-            proj = self.fake_node_proj(x)
-            x = torch.where(fake_end_mask.unsqueeze(-1), proj, x)
+    def embed(self, x, edge_index, edge_attr, batch_labels):
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
 
-    def forward(self, x, edge_index, edge_attr, batch_labels, label_map,
-                fake_x=None, fake_edge_index=None, fake_edge_attr=None,
-                fake_batch_labels=None, fake_label_map=None):
+    def forward(self, x, edge_index, edge_attr, batch_labels, label_map):
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         B = int(label_map[:, 0].max().item()) + 1
-        g_max = int(label_map[:, 1].max().item()) + 1
-        bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+        bulk = group(bulk_emb, label_map, B, self.g_max, self.empty_embedding)
         # bulk shape: [B, g_max, embed_dim]
 
-        if not self.args.use_intermediate:
-            out, h = self.rnn(bulk)
-            predictions = self.decoder(out).squeeze(-1)
-            final_prediction = self.decoder(h[-1])
-            return predictions, final_prediction
-
-        # Split-layer path: bulk through all layers
-        h = bulk
-        layer_outputs = []
-        for layer in self.rnn_layers:
-            h, _ = layer(h)
-            layer_outputs.append(h)
-        bulk_out = h  # [B, g_max, hidden]
-
-        predictions = self.decoder(bulk_out).squeeze(-1)
-        final_prediction = self.decoder(bulk_out[:, -1, :])
-
-        if fake_x is not None:
-            fake_end_mask = (fake_x[:, 2] == (self.args.dt - 1))
-            fake_emb = self.embed(fake_x, fake_edge_index, fake_edge_attr, fake_batch_labels,
-                                  fake_end_mask)
-            fake = group(fake_emb, fake_label_map, B, g_max, self.empty_embedding)
-            # fake shape: [B, g_max, embed_dim]
-
-            # Fake through same layers (batched single step, h_init from bulk)
-            f = fake.reshape(B * g_max, 1, -1)
-            for i, layer in enumerate(self.rnn_layers):
-                h_init = layer_outputs[i].reshape(B * g_max, 1, -1).permute(1, 0, 2).contiguous()
-                f, _ = layer(f, h_init)
-            fake_out = f.reshape(B, g_max, -1)
-
-            # Override predictions with fake ending predictions
-            predictions = self.decoder(fake_out).squeeze(-1)
-
+        out, h = self.rnn(bulk)
+        predictions = self.decoder(out).squeeze(-1)
+        final_prediction = self.decoder(h[-1])
         return predictions, final_prediction
 
 
@@ -149,9 +95,7 @@ class GRUDecoder(nn.Module):
         mwpm_accuracy = None
         if self.args.log_wandb:
             import pymatching
-            mwpm_args = deepcopy(self.args)
-            mwpm_args.use_intermediate = False
-            mwpm_dataset = Dataset(mwpm_args)
+            mwpm_dataset = Dataset(deepcopy(self.args))
             dem = mwpm_dataset.circuits[0].detector_error_model(decompose_errors=True)
             matcher = pymatching.Matching.from_detector_error_model(dem)
 
@@ -210,27 +154,11 @@ class GRUDecoder(nn.Module):
                     batch = batch_or_idx  # already generated
                 else:
                     batch = dataset.generate_batch()
-                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
-                fake_data = batch[7] if len(batch) > 7 else None
+                x, edge_index, batch_labels, label_map, edge_attr, last_label = batch
 
                 t1 = time.perf_counter()
-                if fake_data is not None:
-                    fx, fe_idx, fb_labels, fl_map, fe_attr = fake_data
-                    out, final_prediction = self.forward(
-                        x, edge_index, edge_attr, batch_labels, label_map,
-                        fx, fe_idx, fe_attr, fb_labels, fl_map)
-                else:
-                    out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
-
-                if self.args.use_intermediate and fake_data is not None:
-                    # out.shape[1] == g_max from label_map; flips_full.shape[1] == g_max from data.py
-                    # formula. They differ when the last chunk is empty for all samples in the batch
-                    # (only possible with very small batch sizes; never occurs at batch_size >= 256).
-                    fake_loss = nn.functional.binary_cross_entropy(out, flips_full[:, :out.shape[1]], reduction='none').mean()
-                    final_loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
-                    loss = self.args.fake_loss_weight * fake_loss + self.args.final_loss_weight * final_loss
-                else:
-                    loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
+                out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
+                loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
 
                 loss.backward()
                 optim.step()
@@ -294,7 +222,7 @@ class GRUDecoder(nn.Module):
             for i in tqdm(range(n_iter), disable=verbose):
                 t0 = time.perf_counter()
                 batch = dataset.generate_batch()
-                x, edge_index, batch_labels, label_map, edge_attr, last_label, flips_full = batch[:7]
+                x, edge_index, batch_labels, label_map, edge_attr, last_label = batch
                 t1 = time.perf_counter()
                 out, final_prediction = self.forward(x, edge_index, edge_attr, batch_labels, label_map)
                 t2 = time.perf_counter()

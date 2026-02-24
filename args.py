@@ -12,10 +12,6 @@ class Args:
     k: int = 20
     seed: int | None = None
     norm: float | int = torch.inf
-    use_intermediate: bool = False  # enable MPP labels + fake endings (training only)
-    fake_loss_weight: float = 1.0   # weight for fake ending intermediate loss
-    final_loss_weight: float = 1.2  # weight for final prediction loss
-
     # Torch
     device: torch.device = field(
     default_factory=lambda: torch.device(

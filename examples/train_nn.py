@@ -9,9 +9,9 @@ import numpy as np
 from datetime import datetime
 import argparse
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --batch_size 32 --n_batches 10 --n_epochs 2
-# python examples/train_nn.py --d 3 --p 0.001 --t 49 --dt 2 --intermediate --test
+# python examples/train_nn.py --d 3 --p 0.001 --t 50 --dt 2 --test
 # python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --load_path my_model
-# python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-mpp
+# python examples/train_nn.py --d 5 --p 0.001 --t 50 --dt 2 --wandb --wandb_project GNN-RNN-train-all-times
 
 
 def find_max_inference_batch_size(decoder, args, t):
@@ -84,15 +84,11 @@ def run_test(decoder, args, test_rounds, test_shots):
         # MPS/CPU don't raise catchable OOM exceptions)
         if args.device.type == 'cuda':
             test_batch_size = find_max_inference_batch_size(decoder, args, t)
-            # The multi-layer cuDNN GRU (last mode) reserves O(n_layers * B * seq *
-            # hidden) memory in one contiguous block — n_layers× more than the
-            # single-layer GRUs used by intermediate mode.  The probe runs in
-            # relatively clean memory and may find a batch size whose reserve
-            # exhausts fragmented memory during the actual test.  Dividing by
-            # n_gru_layers brings the peak reservation in line with what the probe
-            # actually observed, at the cost of 1/n_layers throughput.
-            if not args.use_intermediate:
-                test_batch_size = max(1, test_batch_size // args.n_gru_layers)
+            # The multi-layer cuDNN GRU reserves O(n_layers * B * seq * hidden)
+            # memory in one contiguous block.  The probe runs in clean memory and
+            # may find a batch size that exhausts fragmented memory during the
+            # actual test.  Dividing by n_gru_layers keeps peak usage in line.
+            test_batch_size = max(1, test_batch_size // args.n_gru_layers)
             torch.cuda.empty_cache()
         else:
             test_batch_size = args.batch_size
@@ -153,8 +149,6 @@ if __name__ == "__main__":
     parser.add_argument('--n_batches', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=200)
     parser.add_argument('--load_path', type=str, default=None)
-    parser.add_argument('--intermediate', action='store_true',
-                        help='Enable intermediate labels (MPP + fake endings)')
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--wandb_project', type=str, default='GNN-RNN-google')
@@ -175,15 +169,12 @@ if __name__ == "__main__":
     t = args_cli.t
     dt = args_cli.dt
     load_path = args_cli.load_path or None  # treat empty string as None
-    label_mode = "intermediate" if args_cli.intermediate else "last"
 
     args = Args(
         distance=d,
         error_rate=p,
         t=t,
         dt=dt,
-
-        use_intermediate=args_cli.intermediate,
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,
@@ -198,7 +189,7 @@ if __name__ == "__main__":
     date = datetime.now().strftime("%y%m%d")
     job_id = os.environ.get("SLURM_JOB_ID", "")
     run_id = job_id if job_id else datetime.now().strftime("%H%M%S")
-    model_name = f"d{d}_p{p}_t{t}_dt{dt}_{label_mode}_{date}_{run_id}"
+    model_name = f"d{d}_p{p}_t{t}_dt{dt}_{date}_{run_id}"
     if args_cli.note:
         model_name += f"_{args_cli.note}"
 
