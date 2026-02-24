@@ -8,7 +8,15 @@ from enum import Enum
 from threading import Thread, Event
 from queue import Queue, Empty
 from copy import deepcopy
+from pathlib import Path
 from args import Args
+
+_CIRCUITS_DIR = Path(__file__).parent / "circuits_ZXXZ"
+
+
+def _p_to_str(p: float) -> str:
+    """Format error rate as used in circuits_ZXXZ filenames, e.g. 0.001 → '0_001'."""
+    return f"{p:.3f}".replace(".", "_")
 
 
 class FlipType(Enum):
@@ -38,6 +46,7 @@ class Dataset:
         self.k = args.k
         self.seed = args.seed
         self.norm = args.norm
+        self.noise_model = args.noise_model
 
         if flip is FlipType.BIT:
             self.code_task = "surface_code:rotated_memory_z"
@@ -52,15 +61,24 @@ class Dataset:
         self.circuits = []
         self.dem = []
         for er in self.error_rates:
-            circuit = stim.Circuit.generated(
-                self.code_task,
-                distance=self.distance,
-                rounds=self.t,
-                after_clifford_depolarization=er,
-                after_reset_flip_probability=er,
-                before_measure_flip_probability=er,
-                before_round_data_depolarization=er,
-            )
+            if self.noise_model == "SI1000":
+                path = _CIRCUITS_DIR / f"d{self.distance}_X_r{self.t}_p_{_p_to_str(er)}.stim"
+                if not path.exists():
+                    raise FileNotFoundError(
+                        f"SI1000 circuit not found: {path}\n"
+                        f"Available: {sorted(_CIRCUITS_DIR.glob('*.stim'))}"
+                    )
+                circuit = stim.Circuit.from_file(str(path))
+            else:
+                circuit = stim.Circuit.generated(
+                    self.code_task,
+                    distance=self.distance,
+                    rounds=self.t,
+                    after_clifford_depolarization=er,
+                    after_reset_flip_probability=er,
+                    before_measure_flip_probability=er,
+                    before_round_data_depolarization=er,
+                )
             self.circuits.append(circuit)
             self.dem.append(circuit.detector_error_model())
 

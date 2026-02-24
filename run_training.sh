@@ -13,14 +13,16 @@ module load PyTorch-Geometric/2.5.0-foss-2023a-PyTorch-2.1.2-CUDA-12.1.1
 source .venv/bin/activate
 
 # send script
-# $14 (p_list): optional space-separated error rates for multi-p training, e.g. "0.001 0.002 0.003 0.004 0.005"
-#               if set, overrides --p for training (--p is still used for model naming)
+# $14 (p_list):     optional space-separated error rates for multi-p training, e.g. "0.001 0.002 0.003 0.004 0.005"
+#                   if set, overrides --p for training (--p is still used for model naming)
+# $15 (noise_model): optional noise model, e.g. "SI1000" to load circuits from circuits_ZXXZ/
 python examples/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
     ${8:+--intermediate} ${9:+--note "$9"} ${10:+--load_path "${10}"} ${11:+--wandb --wandb_project "${11}"} \
-    ${12:+--test} ${13:+--auto_batch_size} ${14:+--p_list ${14}}
-# sbatch run_training.sh  d  t  dt  batch  nbatch  epochs  p  [intermediate]  [note]  [load_path]  [wandb_project]  [test]  [autobatch]  [p_list]
+    ${12:+--test} ${13:+--auto_batch_size} ${14:+--p_list ${14}} ${15:+--noise_model "${15}"}
+# sbatch run_training.sh  d  t  dt  batch  nbatch  epochs  p  [intermediate]  [note]  [load_path]  [wandb_project]  [test]  [autobatch]  [p_list]          [noise_model]
 # sbatch run_training.sh  3  50  2  2048   256     200     0.001
 # sbatch run_training.sh  3  50  2  2048   256     200     0.001  ""  baseline
 # sbatch run_training.sh  3  50  2  2048   256     200     0.001  int  baseline  ""  GNN-RNN-train-all-times  test
 # sbatch run_training.sh  3  50  2  2048   256     200     0.001  int  baseline  ""  GNN-RNN-train-all-times  test  autobatch
 # sbatch run_training.sh  3  50  2  2048   256     200     0.001  int  baseline  ""  GNN-RNN-train-all-times  test  autobatch  "0.001 0.002 0.003 0.004 0.005"
+# sbatch run_training.sh  3  50  2  2048   256     200     0.001  ""   ""        ""  GNN-RNN-train-all-times  ""    ""         "0.001 0.005"                  SI1000

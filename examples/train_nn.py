@@ -35,6 +35,9 @@ def find_max_inference_batch_size(decoder, args, t, error_rate=None):
         if candidate < 1:
             return False
         try:
+            # For SI1000, circuit files only exist for specific t values.
+            # Use the standard generated circuit for memory probing (structure is
+            # similar enough; accuracy doesn't matter here).
             test_args = Args(
                 distance=args.distance, error_rate=probe_p,
                 t=t, dt=args.dt, batch_size=candidate,
@@ -119,6 +122,7 @@ def run_test(decoder, args, test_rounds, test_shots):
                 hidden_size=args.hidden_size,
                 n_gru_layers=args.n_gru_layers,
                 prefetch=False,
+                noise_model=args.noise_model,
             )
             dataset = Dataset(test_args)
 
@@ -170,7 +174,7 @@ if __name__ == "__main__":
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--wandb_project', type=str, default='GNN-RNN-google')
+    parser.add_argument('--wandb_project', type=str, default='GNN-google-data')
     parser.add_argument('--test', action='store_true',
                         help='Run evaluation after training')
     parser.add_argument('--test_rounds', type=int, nargs='+',
@@ -180,6 +184,8 @@ if __name__ == "__main__":
                         help='Auto-tune batch_size at training start (CUDA only)')
     parser.add_argument('--no_prefetch', action='store_true',
                         help='Disable background data prefetching')
+    parser.add_argument('--noise_model', type=str, default=None,
+                        help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
 
     args_cli = parser.parse_args()
 
@@ -205,6 +211,7 @@ if __name__ == "__main__":
         wandb_project=args_cli.wandb_project,
         prefetch=not args_cli.no_prefetch,
         auto_batch_size=args_cli.auto_batch_size,
+        noise_model=args_cli.noise_model,
     )
     date = datetime.now().strftime("%y%m%d")
     job_id = os.environ.get("SLURM_JOB_ID", "")

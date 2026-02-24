@@ -33,4 +33,5 @@ class Args:
     hidden_size: int = 256
     n_gru_layers: int = 4
     log_wandb: bool = False
-    wandb_project: str = "GNN-RNN-google"
+    wandb_project: str = "GNN-google-data"
+    noise_model: str | None = None  # 'SI1000' → load circuit from circuits_ZXXZ/
