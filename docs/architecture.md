@@ -404,17 +404,17 @@ embeddings into a single meta-embedding, which feeds a meta-GRU.
 
 ```
 Level 0 (d=3):
-  8 stabilizers → GNN → GRU → bulk_out[:, j, :]   (256-dim per round)
+  8 stabilizers → GNN → embed_chunks[:, j, :]   (256-dim per chunk, no RNN)
 
 Level 1 (d=5):
   d=5 split into 2×2 grid of d=3 patches (shared boundary detectors)
-  4 × frozen d=3 GRU → 4 embeddings/round, arranged [256, 2, 2]
-  Conv2d(256, H, 2) → [H] per round → meta-GRU → prediction
+  4 × frozen d=3 GNN → 4 embeddings/chunk, arranged [256, 2, 2]
+  Conv2d(256, 256, 2) → [256] per chunk → meta-GRU → prediction
 
 Level 2 (d=9):
   d=9 split into 2×2 grid of d=5 patches
-  4 × frozen d=5 stack → 4 embeddings/round
-  Conv2d(H, H2, 2) → meta-GRU → prediction
+  4 × frozen d=5 GNN+meta-GRU stack → 4 embeddings/chunk
+  Conv2d(256, 256, 2) → meta-GRU → prediction
 
   ...
 ```
@@ -506,14 +506,28 @@ short-range part of the decoder; the meta-CNN + meta-GRU learn the long-range pa
 | Component | Status | File |
 |-----------|--------|------|
 | `HierarchicalDataset` (patch extraction) | DONE | `data.py` |
-| `GRUDecoder.embed_sequence` | DONE | `gru_decoder.py` |
+| `HierarchicalBatchPrefetcher` | DONE | `data.py` |
+| `GRUDecoder.embed_chunks` (GNN only, no RNN) | DONE | `gru_decoder.py` |
 | `MetaGRUDecoder` (CNN + meta-GRU) | DONE | `hierarchical_decoder.py` |
-| `train_hierarchical.py` | DONE | `examples/train_hierarchical.py` |
+| `train_hierarchical.py` (prefetch + compile + test) | DONE | `examples/train_hierarchical.py` |
 | `run_hierarchical.sh` | DONE | `run_hierarchical.sh` |
 
-**What the base model contributes**: GNN (`embed`) + GRU (`rnn`), both frozen.
-Only the base model's decoder head (`Linear + Sigmoid`) is discarded — replaced by
-the meta-CNN + meta-GRU + meta-decoder.
+**What the base model contributes**: only the GNN (`embed`), frozen.
+The base GRU is not used — all temporal integration is handled by the meta-GRU.
+The base model's decoder head (`Linear + Sigmoid`) is also discarded.
+
+**Meta-GRU warm start**: if `meta_hidden == hidden_size == embed_dim` (true with
+default args, all 256), the meta-GRU weights are copied from the base model's GRU
+at init. Both process sequential chunk-level embeddings of the same dimension, so
+the pretrained temporal integration is a good starting point.
+
+**Prefetching**: `HierarchicalBatchPrefetcher` owns its own `HierarchicalDataset`
+for thread safety and runs `generate_batch()` in a background thread while the GPU
+processes the previous batch. The GIL is released during numpy graph construction,
+giving real parallelism. `data_time` in epoch logs measures only queue wait time.
+
+**torch.compile**: enabled on CUDA via `torch.compile(meta_model)` before training.
+Not applied on MPS (limited support).
 
 **Verified patch geometry** (d=5, t=10):
 - Split at `x_mid ± 1` (= 4 and 6): both boundary columns replicated
@@ -529,16 +543,10 @@ the meta-CNN + meta-GRU + meta-decoder.
 - **Boundary detector replication vs assignment**: replication preserves all
   information but introduces correlated inputs. If this hurts, assign each boundary
   detector to the patch whose centroid is closer.
-- **Coordinate renormalization**: after patch extraction, rescale (x, y) coords
-  to match the d=3 training range [0, 4]. Verify the renormalized coords
-  match the expected d=3 detector layout before freezing.
 - **Long-range errors**: errors spanning a patch boundary are invisible to the
   lower-level model and must be decoded by the meta-CNN/GRU. The meta-layer
   sees all 4 patch embeddings simultaneously, so cross-patch correlations are
   recoverable in principle.
-- **bulk_out indexing**: the base model's `bulk_out[:, j, :]` gives the GRU state
-  after chunk j. This is used as the patch embedding at level j. Temporal alignment
-  across patches is automatic since all patches share the same round index.
 
 ---
 

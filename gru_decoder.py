@@ -41,14 +41,22 @@ class GRUDecoder(nn.Module):
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
 
-    def embed_sequence(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
-        """Return per-round GRU hidden states [B, g_max, hidden_size].
+    def embed_chunks(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
+        """Return per-chunk GNN embeddings [B, g_max, embed_dim] (no RNN).
 
         B and g_max are passed explicitly so sparse patches (where some samples
         have no detection events) still produce the correct output shape.
         """
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
-        bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+        return group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+
+    def embed_sequence(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
+        """Return per-chunk GRU hidden states [B, g_max, hidden_size].
+
+        B and g_max are passed explicitly so sparse patches (where some samples
+        have no detection events) still produce the correct output shape.
+        """
+        bulk = self.embed_chunks(x, edge_index, edge_attr, batch_labels, label_map, B, g_max)
         out, _ = self.rnn(bulk)
         return out  # [B, g_max, hidden_size]
 

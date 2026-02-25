@@ -572,6 +572,49 @@ class BatchPrefetcher:
             self._thread.join(timeout=5)
 
 
+class HierarchicalBatchPrefetcher:
+    """Like BatchPrefetcher but for HierarchicalDataset.
+
+    Owns its own HierarchicalDataset instance for thread safety.
+    """
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = HierarchicalDataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        self._stop.clear()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
 def find_optimal_batch_size(args: Args, model, candidates=None):
     """Warmup: try batch sizes, measure throughput, pick best.
 
