@@ -337,6 +337,193 @@ class Dataset:
         plt.show()
 
 
+class HierarchicalDataset:
+    """Samples from a d=2k-1 circuit and splits detection events into 4
+    overlapping d=k patches for hierarchical decoding.
+
+    The d=2k-1 lattice is split at its spatial midpoint into a 2x2 grid of
+    d=k patches (TL, TR, BL, BR).  Boundary detectors are replicated to both
+    adjacent patches.  Each patch's coordinates are translated to the origin
+    so they match the d=k training distribution.
+    """
+
+    def __init__(self, args: Args):
+        self._full = Dataset(args)
+        self.batch_size = args.batch_size
+        self._setup_patches()
+
+    def _setup_patches(self):
+        coords = self._full.detector_coordinates[0]  # [n_det, 3] int64
+        x, y = coords[:, 0], coords[:, 1]
+        x_mid = (int(x.min()) + int(x.max())) / 2
+        y_mid = (int(y.min()) + int(y.max())) / 2
+
+        # Expand each patch by ±1 around the split line so both boundary
+        # columns/rows are replicated into the adjacent patches.
+        # E.g. d=5, x_mid=5: left gets x≤6, right gets x≥4 → x∈{4,6} shared.
+        # After renorm each patch has the same spatial extent as a standalone
+        # d=k code (d=3: x∈{0,2,4,6}), matching the training distribution.
+        patch_masks = [
+            (x <= x_mid + 1) & (y <= y_mid + 1),  # TL
+            (x >= x_mid - 1) & (y <= y_mid + 1),  # TR
+            (x <= x_mid + 1) & (y >= y_mid - 1),  # BL
+            (x >= x_mid - 1) & (y >= y_mid - 1),  # BR
+        ]
+        self.patch_indices = [np.where(m)[0] for m in patch_masks]
+
+        self._patch_coords = []
+        self._patch_pos_idx = []
+        self._patch_edge_weights = []
+        self._patch_local_pairs: list[dict] = [{} for _ in range(4)]
+
+        for mask in patch_masks:
+            pc = coords[mask].copy()
+            pc[:, :2] -= pc[:, :2].min(axis=0)  # translate to origin
+            self._patch_coords.append(pc)
+            pos_idx, ew = self._build_edge_weights(pc)
+            self._patch_pos_idx.append(pos_idx)
+            self._patch_edge_weights.append(ew)
+
+    def _build_edge_weights(self, patch_coord: np.ndarray):
+        """Build L-inf inverse-square edge weight table for patch coordinates."""
+        dt = self._full.dt
+        unique_xy = np.unique(patch_coord[:, :2], axis=0)
+        chunk_pos = np.array(
+            [(xi, yi, tl) for xi, yi in unique_xy for tl in range(dt)],
+            dtype=np.int64,
+        )
+        diff = chunk_pos[:, None, :] - chunk_pos[None, :, :]
+        dist = np.abs(diff).max(axis=2).astype(np.float32)
+        with np.errstate(divide='ignore'):
+            edge_weights = np.where(dist > 0, 1.0 / dist**2, 0.0).astype(np.float32)
+        max_x, max_y = int(unique_xy[:, 0].max()), int(unique_xy[:, 1].max())
+        pos_idx = np.full((max_x + 1, max_y + 1, dt), -1, dtype=np.int64)
+        for i, (xi, yi, tl) in enumerate(chunk_pos):
+            pos_idx[xi, yi, tl] = i
+        return pos_idx, edge_weights
+
+    def generate_batch(self):
+        """Sample from the full circuit and return 4 patch sub-batches.
+
+        Returns:
+            patch_batches: list of 4 × (x, edge_index, labels, label_map, edge_attr)
+                           ordered [TL, TR, BL, BR]
+            last_label: [B, 1] float32 tensor
+            g_max: number of time chunks per sample
+        """
+        sampler_idx = np.random.choice(len(self._full.samplers))
+        syndromes, label_data = self._full.sample_syndromes(sampler_idx)
+        last_label = torch.from_numpy(label_data).to(
+            dtype=torch.float32, device=self._full.device
+        )
+        sampler_t = self._full._sampler_t[sampler_idx]
+        g_max = sampler_t - self._full.dt + 2
+
+        patch_batches = [
+            self._build_patch_batch(
+                syndromes[:, self.patch_indices[p]],
+                self._patch_coords[p],
+                self._patch_pos_idx[p],
+                self._patch_edge_weights[p],
+                self._patch_local_pairs[p],
+                sampler_t,
+            )
+            for p in range(4)
+        ]
+        return patch_batches, last_label, g_max
+
+    def _build_patch_batch(
+        self,
+        patch_syndromes: np.ndarray,  # [B, n_patch_det] bool
+        patch_coord: np.ndarray,       # [n_patch_det, 3] int64
+        pos_idx: np.ndarray,
+        edge_weights: np.ndarray,
+        local_pairs: dict,
+        sampler_t: int,
+    ):
+        B = self.batch_size
+        dt = self._full.dt
+        g_max = sampler_t - dt + 2
+
+        node_features_list = [patch_coord[s] for s in patch_syndromes]
+        node_features_list, chunk_labels = self._full.get_sliding_window(
+            node_features_list, sampler_t
+        )
+
+        batch_labels = np.repeat(np.arange(B), [len(f) for f in node_features_list])
+        coords_int = np.vstack(node_features_list)  # (0,3) when all empty
+        node_features_float = coords_int.astype(np.float32)
+
+        if len(batch_labels) > 0:
+            combined = batch_labels.astype(np.int64) * g_max + chunk_labels.astype(np.int64)
+            change = np.empty(len(combined), dtype=bool)
+            change[0] = True
+            change[1:] = combined[1:] != combined[:-1]
+            group_starts = np.flatnonzero(change)
+            group_sizes = np.diff(np.append(group_starts, len(combined)))
+            label_map = np.column_stack(
+                [batch_labels[group_starts], chunk_labels[group_starts]]
+            )
+            labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
+        else:
+            group_starts = np.array([], dtype=np.int64)
+            group_sizes = np.array([], dtype=np.int64)
+            label_map = np.zeros((0, 2), dtype=np.int64)
+            labels = np.array([], dtype=np.int64)
+
+        edge_index, edge_attr = self._compute_patch_fc_edges(
+            coords_int, group_starts, group_sizes, pos_idx, edge_weights, local_pairs
+        )
+
+        device = self._full.device
+        return (
+            torch.from_numpy(node_features_float).to(device),
+            edge_index.to(device),
+            torch.from_numpy(labels).to(device),
+            torch.from_numpy(label_map).to(dtype=torch.long, device=device),
+            edge_attr.to(device),
+        )
+
+    def _compute_patch_fc_edges(
+        self, coords_int, group_starts, group_sizes, pos_idx, edge_weights, local_pairs
+    ):
+        if len(group_starts) == 0:
+            return torch.zeros((2, 0), dtype=torch.long), torch.zeros(0, dtype=torch.float32)
+
+        src_list, tgt_list, w_list = [], [], []
+        unique_sizes, size_inv = np.unique(group_sizes, return_inverse=True)
+
+        for ui, s in enumerate(unique_sizes):
+            if s <= 1:
+                continue
+            starts = group_starts[size_inv == ui]
+            if s not in local_pairs:
+                sl, tl = np.where(~np.eye(s, dtype=bool))
+                local_pairs[s] = (sl, tl)
+            src_local, tgt_local = local_pairs[s]
+
+            gsrc = (starts[:, None] + src_local[None, :]).ravel()
+            gtgt = (starts[:, None] + tgt_local[None, :]).ravel()
+
+            sc = coords_int[gsrc]
+            tc = coords_int[gtgt]
+            ps = pos_idx[sc[:, 0], sc[:, 1], sc[:, 2]]
+            pt = pos_idx[tc[:, 0], tc[:, 1], tc[:, 2]]
+
+            valid = (ps >= 0) & (pt >= 0)
+            src_list.append(gsrc[valid])
+            tgt_list.append(gtgt[valid])
+            w_list.append(edge_weights[ps[valid], pt[valid]])
+
+        if src_list:
+            ei = torch.from_numpy(
+                np.stack([np.concatenate(src_list), np.concatenate(tgt_list)]).astype(np.int64)
+            )
+            ea = torch.from_numpy(np.concatenate(w_list))
+            return ei, ea
+        return torch.zeros((2, 0), dtype=torch.long), torch.zeros(0, dtype=torch.float32)
+
+
 class BatchPrefetcher:
     """Producer-consumer prefetcher with its own Dataset instance (thread safety).
 

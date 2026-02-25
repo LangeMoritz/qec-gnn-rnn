@@ -398,92 +398,147 @@ Standalone evaluation is also available via `examples/test_nn.py`.
 ## Concept
 
 Train a small model on d=3 codes, then recursively compose it into decoders for
-larger distances. At each level, a lower-level model processes spatial patches and
-produces a single embedding per patch per round; those embeddings become nodes for
-the next-level GNN+GRU.
+larger distances. At each level, a lower-level model processes 4 spatial patches
+and produces one embedding per patch per round; a 2×2 CNN aggregates those 4
+embeddings into a single meta-embedding, which feeds a meta-GRU.
 
 ```
-Level 0: d=3 model
-  8 stabilizers → GNN → pool → 1 embedding per round
+Level 0 (d=3):
+  8 stabilizers → GNN → GRU → bulk_out[:, j, :]   (256-dim per round)
 
-Level 1: d=7 model
-  d=7 lattice ≈ 2×2 grid of ~d=3 patches
-  Each patch → frozen d=3 GNN → pool → 1 node
-  4 nodes/round → meta-GNN → meta-GRU → prediction
+Level 1 (d=5):
+  d=5 split into 2×2 grid of d=3 patches (shared boundary detectors)
+  4 × frozen d=3 GRU → 4 embeddings/round, arranged [256, 2, 2]
+  Conv2d(256, H, 2) → [H] per round → meta-GRU → prediction
 
-Level 2: d=15 model
-  d=15 lattice ≈ 2×2 grid of ~d=7 patches
-  Each patch → frozen d=7 stack → 1 node
-  4 nodes/round → meta-GNN → meta-GRU → prediction
+Level 2 (d=9):
+  d=9 split into 2×2 grid of d=5 patches
+  4 × frozen d=5 stack → 4 embeddings/round
+  Conv2d(H, H2, 2) → meta-GRU → prediction
 
   ...
 ```
 
-The sequence follows d_{n+1} = 2*d_n + 1: 3 → 7 → 15 → 31 → ...
+The sequence follows d_{n+1} = 2*d_n - 1 (overlapping patches, shared boundary):
+**3 → 5 → 9 → 17 → 33 → ...**
+
+Each step: 4 patches of d=k, sharing 1 row/column of stabilizers on each inner
+boundary, tile exactly into d=2k-1.
 
 ## Geometry
 
 The rotated surface code stabilizer counts:
-- d=3: 8 stabilizers; d=7: 48; d=15: 224; d=31: 960
-- Each level ≈ 4× the patch count of the previous (48/8=6, close enough)
+- d=3: 8 stabilizers; d=5: 24; d=9: 80; d=17: 288
 
-Spatial partition: divide the d=7 lattice into four ~d=3-sized quadrants.
-Boundary stabilizers (shared between patches) need a convention — assign to one
-patch or split/replicate. The boundary handling is the main geometric subtlety.
+A d=5 code split into 4 d=3 patches:
+- Patches share the central row and column of stabilizers (boundary stabilizers)
+- d=3 patch has 8 stabilizers; 4 patches × 8 = 32 total, minus 8 shared = 24 ✓
+- The split point is at `(x_mid, y_mid)` in stim detector coordinates
+
+**Boundary detector assignment** (split at midpoint):
+
+| Patch | x | y |
+|-------|---|---|
+| TL | x ≤ x_mid | y ≤ y_mid |
+| TR | x ≥ x_mid | y ≤ y_mid |
+| BL | x ≤ x_mid | y ≥ y_mid |
+| BR | x ≥ x_mid | y ≥ y_mid |
+
+Boundary detectors (on the split line) are **replicated** to both adjacent patches.
+Corner detectors (at the intersection of both split lines) appear in all 4 patches.
+After assignment, each patch's coordinates are renormalized to the d=3 training
+range so the frozen base model sees familiar input.
+
+## Meta-Aggregation: 2×2 CNN
+
+At each round j, the 4 patch embeddings are arranged as a 2×2 spatial map
+with 256 channels — exactly a `[256, 2, 2]` tensor per sample:
+
+```
+┌──────┬──────┐
+│  TL  │  TR  │   each cell: 256-dim GRU embedding from that patch
+├──────┼──────┤
+│  BL  │  BR  │
+└──────┴──────┘
+→ Conv2d(256, H, kernel_size=2)   [kernel covers the full 2×2 grid in one step]
+→ [H, 1, 1] → squeeze → H-dim meta-embedding for round j
+```
+
+The Conv2d filter has shape `[H, 256, 2, 2]`: it applies a different 256-dim
+weight vector to each of the 4 spatial positions (TL/TR/BL/BR), then sums.
+This is equivalent to a Linear(4×256, H) but with the spatial inductive bias
+that position (TL vs TR vs BL vs BR) is encoded structurally, not by concat order.
+
+Parameter count: `H × 256 × 2 × 2 + H` — same order as one GNN layer.
 
 ## Model Architecture per Level
 
-Each level has the same structure; only the GNN changes:
+| Level | Input | Meta-aggregator | meta_hidden | n_meta_gru_layers |
+|-------|-------|-----------------|-------------|-------------------|
+| d=3 | raw detectors | GNN `[3,64,256]` + GRU | 256 | 4 |
+| d=5 | 4 × d=3 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
+| d=9 | 4 × d=5 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
+| d=17 | 4 × d=9 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
 
-| Level | GNN input | GNN | hidden_size | n_gru_layers |
-|-------|-----------|-----|-------------|--------------|
-| d=3 | raw detectors | `[3, 64, 256]` (2 layers) | 256 | 4 |
-| d=7 | 4 patch embeddings (256-dim) | meta-GNN (TBD) | 256+ | 4+ |
-| d=15 | 4 patch embeddings | meta-GNN (TBD) | decide then | decide then |
-
-The GRU and decoder head are **not frozen** between levels — the meta-GNN produces
-embeddings with a different distribution than the lower-level GNN, so the GRU
-must be retrained. Its architecture (hidden_size, n_gru_layers) can be freely
-chosen at each level; there is no constraint forcing them to match across levels.
-The only hard constraint is that the GRU input dim equals `embedding_features[-1]`.
-
-A warm-start from the lower level's GRU weights is possible as long as the
-architecture matches, and may help if the meta-GNN learns to produce embeddings
-in a similar latent space.
+Same meta-CNN + meta-GRU architecture at every level. Only the frozen stack below
+grows deeper. Trainable parameters per level: ~1 Conv2d + 1 GRU + 1 decoder head.
 
 ## Training Strategy
 
-1. Train d=3 model fully (small model, fast iterations). Current config: `[3, 64,
-   256]`, `hidden_size=256`, `n_gru_layers=4`. Trained on p=0.001–0.005 mix.
-2. Build d=7 meta-model:
-   - Freeze d=3 GNN weights.
-   - Add a meta-GNN on the 4-node graph of patch embeddings.
-   - Train meta-GNN + new GRU + new decoder from scratch (optionally warm-start GRU).
-3. Repeat for d=15: freeze d=7 stack, train d=15 meta layer.
+1. **d=3**: train fully. Config: `[3, 64, 256]`, `hidden_size=256`, `n_gru_layers=4`.
+2. **d=5**: freeze d=3 weights. Extract 4 d=3 patches per sample from d=5 circuits.
+   Train Conv2d(256,256,2) + meta-GRU + meta-decoder from scratch.
+3. **d=9**: freeze d=5 stack. Extract 4 d=5 patches per sample from d=9 circuits.
+   Train new Conv2d + meta-GRU + meta-decoder.
 
-Only one new GNN layer is added per scale. Total trainable parameters at each
-level stay small even as code distance grows exponentially.
+At each level, only one small new layer is added. The frozen forward pass through
+lower levels is purely inference — fast even for deep stacks.
 
 ## Connection to Renormalization Group
 
 This is a learned RG decoder: each level coarse-grains the error pattern by pooling
-local syndrome graphs into single-site representations, then a higher-level model
+local syndrome graphs into a 256-dim "coarse site", then a higher-level model
 decodes residual long-range correlations. The frozen lower levels implement the
-short-range part of the decoder.
+short-range part of the decoder; the meta-CNN + meta-GRU learn the long-range part.
+
+## Implementation Status
+
+| Component | Status | File |
+|-----------|--------|------|
+| `HierarchicalDataset` (patch extraction) | DONE | `data.py` |
+| `GRUDecoder.embed_sequence` | DONE | `gru_decoder.py` |
+| `MetaGRUDecoder` (CNN + meta-GRU) | DONE | `hierarchical_decoder.py` |
+| `train_hierarchical.py` | DONE | `examples/train_hierarchical.py` |
+| `run_hierarchical.sh` | DONE | `run_hierarchical.sh` |
+
+**What the base model contributes**: GNN (`embed`) + GRU (`rnn`), both frozen.
+Only the base model's decoder head (`Linear + Sigmoid`) is discarded — replaced by
+the meta-CNN + meta-GRU + meta-decoder.
+
+**Verified patch geometry** (d=5, t=10):
+- Split at `x_mid ± 1` (= 4 and 6): both boundary columns replicated
+- All 4 patches: `x,y ∈ {0,2,4,6}` after renorm — matches d=3 training range exactly
+- 240 of 240 unique d=5 detectors replicated (each in exactly 2 patches)
 
 ## Key Open Questions
 
-- **Boundary stabilizers**: how to assign stabilizers on patch boundaries (replicate,
-  halve weights, or train a separate boundary embedding)?
-- **Pooling function**: global mean pool works for d=3; learnable pooling
-  (e.g. attention-weighted) might better capture which region matters most.
-- **Temporal alignment**: the GRU sequences at each level must be synchronized —
-  each meta-node at round r comes from pooling round r of its patch.
-- **Long-range errors**: hook errors spanning a patch boundary are invisible to the
-  lower level and must be decoded by the meta-GNN. The meta-graph needs edges
-  between adjacent patches.
-- **Exact distance tiling**: d=7 doesn't split into four exact d=3 codes; patch
-  models are applied to sub-graphs, not independent sub-codes.
+- **Distribution shift at boundaries**: the frozen d=3 model was trained on full
+  d=3 circuits with physical boundaries on all sides. A patch carved from a d=5
+  circuit has inner boundaries (no physical edge on the shared side). This may
+  degrade base model accuracy. Fix: retrain d=3 on boundary-aware patches.
+- **Boundary detector replication vs assignment**: replication preserves all
+  information but introduces correlated inputs. If this hurts, assign each boundary
+  detector to the patch whose centroid is closer.
+- **Coordinate renormalization**: after patch extraction, rescale (x, y) coords
+  to match the d=3 training range [0, 4]. Verify the renormalized coords
+  match the expected d=3 detector layout before freezing.
+- **Long-range errors**: errors spanning a patch boundary are invisible to the
+  lower-level model and must be decoded by the meta-CNN/GRU. The meta-layer
+  sees all 4 patch embeddings simultaneously, so cross-patch correlations are
+  recoverable in principle.
+- **bulk_out indexing**: the base model's `bulk_out[:, j, :]` gives the GRU state
+  after chunk j. This is used as the patch embedding at level j. Temporal alignment
+  across patches is automatic since all patches share the same round index.
 
 ---
 
