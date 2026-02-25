@@ -23,6 +23,7 @@ __pycache__/
 *.png
 *.md
 !docs/*.md
+docs/experiments.md
 *.dem
 *.svg
 *.01
