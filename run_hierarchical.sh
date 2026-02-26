@@ -9,8 +9,9 @@ module purge
 module load PyTorch-Geometric/2.5.0-foss-2023a-PyTorch-2.1.2-CUDA-12.1.1
 source .venv/bin/activate
 
-# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]  [auto_batch]
-# sbatch run_hierarchical.sh  d3_p0.001_t50_dt2_260224_5979931  5  0.001  50  2  2048  256  200  hier_multip  GNN-RNN-hierarchical  "0.001 0.002 0.003 0.004 0.005"  test  auto_batch
+# auto_batch_size is on by default; pass --no_auto_batch_size explicitly if needed
+# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]
+# sbatch run_hierarchical.sh  d3_p0.001_t50_dt2_260224_5979931  5  0.001  50  2  2048  256  200  hier_multip  GNN-RNN-hierarchical  "0.001 0.002 0.003 0.004 0.005"  test
 
 python examples/train_hierarchical.py \
     --base_model "$1" \
@@ -24,5 +25,4 @@ python examples/train_hierarchical.py \
     ${9:+--note "$9"} \
     ${10:+--wandb --wandb_project "${10}"} \
     ${11:+--p_list ${11}} \
-    $([[ "${12}" == "test" ]] && echo "--test") \
-    $([[ "${13}" == "auto_batch" ]] && echo "--auto_batch_size")
+    $([[ "${12}" == "test" ]] && echo "--test")

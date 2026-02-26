@@ -174,8 +174,8 @@ if __name__ == "__main__":
     parser.add_argument('--test_rounds', type=int, nargs='+',
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument('--test_shots', type=int, default=1_000_000)
-    parser.add_argument('--auto_batch_size', action='store_true',
-                        help='Auto-tune batch_size at training start (CUDA only)')
+    parser.add_argument('--no_auto_batch_size', dest='auto_batch_size', action='store_false',
+                        help='Disable auto-tuning of batch_size at training start')
     parser.add_argument('--no_prefetch', action='store_true',
                         help='Disable background data prefetching')
 

@@ -20,82 +20,10 @@ from copy import deepcopy
 
 from args import Args
 from gru_decoder import GRUDecoder
-from data import HierarchicalDataset, HierarchicalBatchPrefetcher
+from data import HierarchicalDataset, HierarchicalBatchPrefetcher, find_optimal_batch_size_hierarchical
 from hierarchical_decoder import MetaGRUDecoder
 from utils import TrainingLogger
 
-
-def find_optimal_batch_size_hierarchical(args, meta_model, candidates=None):
-    """Find training batch size with best throughput for the hierarchical model.
-
-    Tries candidates with a forward+backward pass on HierarchicalDataset.
-    Picks the batch size with highest samples/sec (bottleneck = model_time with prefetch).
-    Scales args.n_batches inversely so total samples/epoch stays constant.
-    """
-    if candidates is None:
-        candidates = [512, 1024, 2048, 4096, 8192, 16384]
-
-    original_bs = args.batch_size
-    results = []
-    print(f"\n{'='*60}")
-    print(f"Auto batch size tuning (hierarchical, {args.device})")
-    print(f"{'='*60}")
-    print(f"{'batch_size':>12} {'data_time':>10} {'model_time':>11} {'throughput':>12} {'status':>8}")
-    print(f"{'-'*60}")
-
-    # Probe with worst-case p for memory sizing
-    probe_p = max(args.error_rates) if args.error_rates else args.error_rate
-
-    for bs in candidates:
-        trial_args = deepcopy(args)
-        trial_args.batch_size = bs
-        trial_args.error_rate = probe_p
-        trial_args.error_rates = None
-        try:
-            ds = HierarchicalDataset(trial_args)
-            t0 = time.perf_counter()
-            patch_batches, last_label, g_max = ds.generate_batch()
-            data_time = time.perf_counter() - t0
-
-            meta_model.train()
-            if args.device.type == 'cuda':
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            _, final_prediction = meta_model(patch_batches, bs, g_max)
-            loss = nn.functional.binary_cross_entropy(final_prediction, last_label)
-            loss.backward()
-            if args.device.type == 'cuda':
-                torch.cuda.synchronize()
-            model_time = time.perf_counter() - t0
-
-            meta_model.zero_grad(set_to_none=True)
-
-            throughput = bs / model_time  # prefetch hides data_time
-            results.append((bs, data_time, model_time, throughput))
-            print(f"{bs:>12} {data_time:>10.2f}s {model_time:>10.2f}s {throughput:>10.0f} s/s {'':>8}")
-
-            del ds, patch_batches, last_label, final_prediction, loss
-            if args.device.type == 'cuda':
-                torch.cuda.empty_cache()
-
-        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-            if "out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError):
-                print(f"{bs:>12} {'':>10} {'':>11} {'':>12} {'OOM':>8}")
-                if args.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                break
-            raise
-
-    if not results:
-        print(f"All candidates OOM, keeping batch_size={original_bs}")
-        print(f"{'='*60}\n")
-        return original_bs
-
-    best_bs, _, _, best_tp = max(results, key=lambda r: r[3])
-    print(f"{'-'*60}")
-    print(f"Winner: batch_size={best_bs} ({best_tp:.0f} samples/sec)")
-    print(f"{'='*60}\n")
-    return best_bs
 
 
 def find_max_inference_batch_size_hierarchical(meta_model, args, t, error_rate=None):
@@ -167,8 +95,8 @@ if __name__ == "__main__":
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--wandb_project', type=str, default='GNN-iterative-decoding')
     parser.add_argument('--note', type=str, default='')
-    parser.add_argument('--auto_batch_size', action='store_true',
-                        help='Auto-tune batch size for best GPU throughput (CUDA only)')
+    parser.add_argument('--no_auto_batch_size', dest='auto_batch_size', action='store_false',
+                        help='Disable auto-tuning of batch size at training start')
     parser.add_argument('--test', action='store_true',
                         help='Run evaluation after training')
     parser.add_argument('--test_rounds', type=int, nargs='+',
@@ -248,6 +176,7 @@ if __name__ == "__main__":
     if cli.note:
         model_name += f"_{cli.note}"
 
+    mwpm_accuracy = None
     if cli.wandb:
         wandb.init(
             project=cli.wandb_project,
@@ -261,6 +190,34 @@ if __name__ == "__main__":
                 "n_frozen": n_frozen,
             },
         )
+
+        # Compute MWPM baseline once as a reference line (full d circuit).
+        error_rates = args.error_rates if args.error_rates else [args.error_rate]
+        max_shots = 10_000_000
+        target_rel_std = 0.01
+        mwpm_p_ls = []
+        for er in error_rates:
+            mwpm_args = deepcopy(args)
+            mwpm_args.error_rates = None
+            mwpm_args.error_rate = er
+            mwpm_ds = HierarchicalDataset(mwpm_args)
+            dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
+            matcher = pymatching.Matching.from_detector_error_model(dem)
+            total_correct = total_shots = 0
+            while total_shots < max_shots:
+                det_events, flips = mwpm_ds._full.sample_syndromes(0)
+                preds = matcher.decode_batch(det_events)
+                total_correct += int(np.sum(preds == flips))
+                total_shots += args.batch_size
+                p_l = 1 - total_correct / total_shots
+                if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
+                    break
+            std = np.sqrt(p_l * (1 - p_l) / total_shots)
+            print(f"MWPM baseline p={er}: P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
+            mwpm_p_ls.append(p_l)
+            del mwpm_ds, matcher
+        mwpm_accuracy = 1 - float(np.mean(mwpm_p_ls))
+        print(f"MWPM baseline avg accuracy={mwpm_accuracy:.6f}")
 
     logger = TrainingLogger()
     logger.on_training_begin(args)
@@ -304,7 +261,7 @@ if __name__ == "__main__":
             "lr": scheduler.get_last_lr()[0], "data_time": data_time, "model_time": model_time,
         }
         if cli.wandb:
-            wandb.log(metrics)
+            wandb.log({**metrics, "mwpm_accuracy": mwpm_accuracy})
         logger.on_epoch_end(logs=metrics)
         history.append(metrics)
         scheduler.step()

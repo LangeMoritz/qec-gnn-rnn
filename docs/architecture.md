@@ -311,25 +311,35 @@ Expected impact: hide ~model_time per epoch (3-8s), since data >> model the over
 
 ## Auto Batch Size Tuning (DONE)
 
-`find_optimal_batch_size()` (`data.py`) runs at training start when `--auto_batch_size` is passed (CUDA only):
+`find_optimal_batch_size()` (`data.py`) runs at training start on CUDA (enabled by default, `args.auto_batch_size=True`):
 
 1. For each candidate batch_size `[512, 1024, 2048, 4096, 8192, 16384]`:
    - Generate one batch → `data_time`
    - Forward + backward pass → `model_time`
-   - `throughput = batch_size / max(data_time, model_time)`
+   - `throughput = batch_size / max(data_time, model_time)` (with prefetch: `/ model_time`)
 2. OOM stops the search at larger sizes
 3. Picks the candidate with highest throughput
 4. Scales `n_batches` inversely to keep total samples/epoch constant
 
+`find_optimal_batch_size_hierarchical()` in `data.py` uses the same approach for the hierarchical model.
+
 Warmup cost: ~30-60s (6 candidates × ~5-10s each). The bigger lever is **batch_size**: larger batches amortize per-batch Python overhead in graph construction and keep the GPU busier per step.
 
 ```bash
-# Auto-tune example:
-python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
+# Auto-tune is on by default. To disable:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_auto_batch_size
 
 # Disable prefetch:
 python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
 ```
+
+## Mixed-p Batch Sampling (DONE)
+
+When training on multiple error rates (`--p_list`), each batch previously sampled all `B` shots from one randomly-chosen `p`. This caused high gradient variance: each update was tuned to a single `p`, and the epoch-level accuracy oscillated with σ ≈ std(acc_per_p)/√n_batches.
+
+**Fix**: `Dataset.generate_batch()` now splits the batch evenly across all `n_p` error rates — sampling `B // n_p` shots from each sampler (remainder distributed to the first samplers so total == `B` exactly). Detector coordinates and edge weights are identical across error rates (same geometry), so no structural changes are needed downstream.
+
+This eliminates p-induced gradient variance entirely. The per-batch label distribution now consistently reflects all p values, giving smoother training curves and more stable gradients at no throughput cost.
 
 ---
 
