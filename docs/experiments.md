@@ -265,13 +265,24 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 - **Good p-generalization**: single model decodes all 5 p values without per-p fine-tuning.
 - **Long-t high-p saturation**: at p≥0.003 and t≥500 both NN and MWPM converge toward P_L=0.5. Expected — d=3 cannot protect against these error rates over 1000 rounds.
 
-### Exp 8.A: d=5 Multi-p Base Model for Hierarchical Decoder (2026-02-26)
+### Exp 8.A: Hierarchical Decoder — d=5 with d=3 Base Model (2026-02-26)
 
-Same setup as Exp 8 but d=5, with interleaved sampling (commit `17c4a1e`) and auto-tuned batch size. Intended as the base model for the hierarchical decoder.
+**Goal**: Train the hierarchical `MetaGRUDecoder` (`train_hierarchical.py`) on d=5 using the d=3 multi-p model from Exp 8 as the frozen base. This is the first hierarchical decoder run — not a fresh d=5 model.
 
-| Job | batch_size | n_batches | epochs | Note |
-|-----|------------|-----------|--------|------|
-| 5998426 | 8192 (auto) | 64 | 200 | hier_multip |
+| Parameter | Value |
+|-----------|-------|
+| Script | `train_hierarchical.py` |
+| Base model | `d3_p0.001_t50_dt2_260224_5978671_multi_p` (Exp 8 d=3 multi-p) |
+| Distance | 5 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p\_list | 0.001, 0.002, 0.003, 0.004, 0.005 |
+| Epochs | 200 |
+| Wandb project | `GNN-iterative-decoding` |
+
+| Job | batch\_size | n\_batches | Note |
+|-----|------------|-----------|------|
+| 5998426 | 8192 (auto) | 64 | hier\_multip |
 
 **Results**: _(in progress)_
 
