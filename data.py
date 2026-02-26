@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import time
-import matplotlib.pyplot as plt
 from enum import Enum
 from threading import Thread, Event
 from queue import Queue, Empty
@@ -139,24 +138,28 @@ class Dataset:
         """
         return self._sample_last(sampler_idx)
 
-    def _sample_last(self, sampler_idx: int):
-        """Sample from DEM, return only final logical label."""
+    def _sample_n(self, sampler_idx: int, n: int):
+        """Sample exactly n non-trivial shots from sampler_idx."""
         sampler = self.samplers[sampler_idx]
         accept_rate = self._accept_rates[sampler_idx]
         detection_events_list, observable_flips_list = [], []
-        n_draw = int(self.batch_size / accept_rate * 1.1) + 1
-        while len(detection_events_list) < self.batch_size:
+        n_draw = int(n / accept_rate * 1.1) + 1
+        while len(detection_events_list) < n:
             detection_events, observable_flips, _ = sampler.sample(shots=n_draw)
             mask = np.any(detection_events, axis=1)
             detection_events_list.extend(detection_events[mask])
             observable_flips_list.extend(observable_flips[mask])
-            if len(detection_events_list) < self.batch_size:
-                remaining = self.batch_size - len(detection_events_list)
+            if len(detection_events_list) < n:
+                remaining = n - len(detection_events_list)
                 rate = max(mask.sum() / n_draw, 0.05)
                 n_draw = int(remaining / rate * 1.2) + 1
-        detection_array = np.array(detection_events_list[:self.batch_size])
-        flips_array = np.array(observable_flips_list[:self.batch_size], dtype=np.int32)
+        detection_array = np.array(detection_events_list[:n])
+        flips_array = np.array(observable_flips_list[:n], dtype=np.int32)
         return detection_array.astype(bool), flips_array[:, :1]
+
+    def _sample_last(self, sampler_idx: int):
+        """Sample from DEM, return only final logical label."""
+        return self._sample_n(sampler_idx, self.batch_size)
 
     def get_sliding_window(self, node_features: list[np.ndarray], sampler_t: int
                            ) -> tuple[list[np.ndarray], np.ndarray]:
@@ -290,8 +293,19 @@ class Dataset:
         Returns:
             node_features, edge_index, labels, label_map, edge_attr, last_label
         """
-        sampler_idx = np.random.choice(len(self.samplers))
-        syndromes, label_data = self.sample_syndromes(sampler_idx)
+        n_p = len(self.samplers)
+        if n_p == 1:
+            syndromes, label_data = self._sample_n(0, self.batch_size)
+        else:
+            # Mix all error rates within the batch to reduce gradient variance.
+            # Distribute shots evenly; remainder goes to first samplers so total == batch_size.
+            per_p = self.batch_size // n_p
+            remainder = self.batch_size - per_p * n_p
+            counts = [per_p + (1 if i < remainder else 0) for i in range(n_p)]
+            parts_s, parts_l = zip(*[self._sample_n(i, counts[i]) for i in range(n_p)])
+            syndromes = np.concatenate(parts_s)
+            label_data = np.concatenate(parts_l)
+        sampler_idx = 0  # detector coordinates are identical for all error rates
         last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
 
         node_features, batch_labels, chunk_labels, coords_int = self.get_node_features(syndromes, sampler_idx)
@@ -321,38 +335,6 @@ class Dataset:
         edge_attr = edge_attr.to(self.device)
 
         return (node_features, edge_index, labels, label_map, edge_attr, last_label)
-
-    def plot_graph(self, node_features, edge_index, labels, graph_idx):
-        node_features = node_features.cpu().numpy()
-        features = node_features[labels == graph_idx]
-        min_t, max_t = 0, self.dt - 1
-        edge_mask = (edge_index[0] == np.nonzero(labels == graph_idx)).cpu().numpy()
-        edges = edge_index[:, np.any(edge_mask, axis=0)]
-
-        ax = plt.axes(projection="3d")
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
-        ax.set_zlabel("t")
-        ax.set_xlim(0, self.distance)
-        ax.set_ylim(0, self.distance)
-        ax.set_zlim(min_t, max_t)
-        ax.set_zticks(range(min_t, max_t + 1))
-        ax.view_init(elev=60, azim=-90, roll=0)
-        ax.set_aspect('equal', adjustable='box')
-        plt.gca().invert_yaxis()
-
-        c = ["red" if np.round(feature[3]) == 0 else "green" for feature in features]
-        ax.scatter(*features.T[:3], c=c)
-
-        edge_coordinates = node_features[edges].T[:3]
-        plt.plot(*edge_coordinates, c="blue", alpha=0.3)
-
-        x_stabs = np.nonzero(self.syndrome_mask == 1)
-        z_stabs = np.nonzero(self.syndrome_mask == 3)
-        ax.scatter(x_stabs[1], x_stabs[0], min_t, c="red",  alpha=0.3, s=50, label="X stabilizers")
-        ax.scatter(z_stabs[1], z_stabs[0], min_t, c="green", alpha=0.3, s=50, label="Z stabilizers")
-        plt.legend()
-        plt.show()
 
 
 class BatchPrefetcher:

@@ -24,9 +24,8 @@ def find_max_inference_batch_size(decoder, args, t, error_rate=None):
     error_rate: probe with this error rate (use max p for worst-case sizing).
                 Defaults to max(args.error_rates) or args.error_rate.
     """
-    # Use uncompiled model: avoids torch.compile recompilation overhead/OOM
-    # during probing, and matches the raw model used for actual inference.
-    raw = getattr(decoder, '_orig_mod', decoder)
+
+    raw = decoder
     probe_p = error_rate if error_rate is not None else (
         max(args.error_rates) if args.error_rates else args.error_rate
     )
@@ -141,8 +140,7 @@ def run_test(decoder, args, test_rounds, test_shots):
             std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
             print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
 
-            # NN — use uncompiled model to avoid torch.compile recompilation OOM
-            raw_decoder = getattr(decoder, '_orig_mod', decoder)
+            raw_decoder = decoder
             n_iter = max(1, total_shots // test_batch_size)
             with torch.no_grad():
                 acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
@@ -180,12 +178,20 @@ if __name__ == "__main__":
     parser.add_argument('--test_rounds', type=int, nargs='+',
                         default=[5, 10, 20, 50, 100, 200, 500, 1000])
     parser.add_argument('--test_shots', type=int, default=1_000_000)
-    parser.add_argument('--auto_batch_size', action='store_true',
-                        help='Auto-tune batch_size at training start (CUDA only)')
+    parser.add_argument('--no_auto_batch_size', dest='auto_batch_size', action='store_false',
+                        help='Disable auto-tuning of batch_size at training start')
     parser.add_argument('--no_prefetch', action='store_true',
                         help='Disable background data prefetching')
     parser.add_argument('--noise_model', type=str, default=None,
                         help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
+    parser.add_argument('--hidden_size', type=int, default=256,
+                        help='GRU hidden size and final GNN output dim')
+    parser.add_argument('--gnn_width', type=int, default=64,
+                        help='Intermediate GNN layer width; embedding_features=[3, gnn_width, hidden_size]')
+    parser.add_argument('--n_gru_layers', type=int, default=4,
+                        help='Number of GRU layers')
+    parser.add_argument('--large', action='store_true',
+                        help='Use larger GNN: embedding_features=[3,128,512], hidden_size=512')
 
     args_cli = parser.parse_args()
 
@@ -204,9 +210,9 @@ if __name__ == "__main__":
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,
-        embedding_features=[3, 64, 256],
-        hidden_size=256,
-        n_gru_layers=4,
+        embedding_features=[3, args_cli.gnn_width, args_cli.hidden_size],
+        hidden_size=args_cli.hidden_size,
+        n_gru_layers=args_cli.n_gru_layers,
         log_wandb=args_cli.wandb,
         wandb_project=args_cli.wandb_project,
         prefetch=not args_cli.no_prefetch,
@@ -264,7 +270,6 @@ if __name__ == "__main__":
 
     logger = TrainingLogger()
     decoder.to(args.device)
-    decoder = torch.compile(decoder)
     history = decoder.train_model(logger, save=model_name, checkpoint_meta=checkpoint_meta)
 
     # ── Optional test ──
