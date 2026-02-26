@@ -286,6 +286,27 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 
 **Results**: _(in progress)_
 
+### Exp 8.B: Hierarchical Decoder — d=5 with d=3 Base Model, updated codebase (2026-02-26)
+
+Re-run of Exp 8.A with the current state of the `iterative-decoding` branch (commits through `77b7f85`). Same base model, same hyperparameters.
+
+| Parameter | Value |
+|-----------|-------|
+| Script | `train_hierarchical.py` |
+| Base model | `d3_p0.001_t50_dt2_260224_5978671_multi_p` (Exp 8 d=3 multi-p) |
+| Distance | 5 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p\_list | 0.001, 0.002, 0.003, 0.004, 0.005 |
+| Epochs | 200 |
+| Wandb project | `GNN-iterative-decoding` |
+
+| Job | batch\_size | n\_batches | Note |
+|-----|------------|-----------|------|
+| 6000782 | 2048 (auto) | 256 | hier\_multip\_v2 |
+
+**Results**: _(in progress)_
+
 ## Experiment 9: Multi-p d=3 with Interleaved Sampling (`iterative-decoding` branch, 2026-02-26)
 
 **Goal**: Repeat Exp 8 with stratified batch sampling (B/n_p shots per error rate per batch) to eliminate p-induced gradient variance. Direct comparison to Exp 8.
