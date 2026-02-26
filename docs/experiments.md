@@ -108,7 +108,7 @@ sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-tim
 | 500 | 0.10468 | **0.07830** | 0.10385 | 0.13444 |
 | 1000 | 0.18939 | 0.21118 | 0.26207 | 0.30169 |
 
-**Figure**: `results/ctrl_experiment_260220.pdf`
+**Figure**: `results/exp4_260220_ctrl_last_vs_intermediate.pdf`
 
 **Observations**:
 - **`last` dominates at all t ≤ 500**: beats MWPM by 18–31% and outperforms both intermediate modes at every round count tested.
@@ -154,7 +154,14 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | d=7 last | ~40h | ~6–8× d=3 data scaling |
 | d=7 int | ~55h | ~6–8× d=3 data scaling; may approach 3-day wall |
 
-**Results**: _(pending)_
+**Figure**: `results/exp5_260223_last_vs_intermediate.pdf` | **Data**: `results/eval_d{3,5,7}_p0.001_intermediate.csv`
+
+**Results summary** (see CSV + figure for full tables):
+- **d=5 t≥50**: intermediate beats `last` by ~27% and beats MWPM from t=50 onward
+- **d=3 t≥50**: intermediate ~same as `last`
+- **d=7**: broken — beats MWPM only up to t=100, then diverges (needs more training)
+- **All d at t<50**: intermediate is 3–38× worse than MWPM; `last` mode is much better (root cause: short-t failure, see Exp 4 observations)
+- All three runs crashed at t=1000 testing with CUDA OOM (fixed in commit 89eb6e0)
 
 ## Experiment 6: Dual Post-Pooling MLPs (`dual-proj-mlp` branch, 2026-02-23)
 
@@ -181,9 +188,11 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | d3-last | 5973629 | `last` | Completed + tested | `d3_p0.001_t50_dt2_last_260223_5973629_dual-proj.pt` |
 | d3-int | 5973630 | `--intermediate` | Completed + tested | `d3_p0.001_t50_dt2_intermediate_260223_5973630_dual-proj.pt` |
 | d5-last | 5973631 | `last` | Completed + tested | `d5_p0.001_t50_dt2_last_260223_5973631_dual-proj.pt` |
-| d5-int | 5973632 | `--intermediate` | **Running** (22h+) | `d5_p0.001_t50_dt2_intermediate_260223_5973632_dual-proj.pt` |
+| d5-int | 5973632 | `--intermediate` | Completed + tested | `d5_p0.001_t50_dt2_intermediate_260223_5973632_dual-proj.pt` |
 
-**Results**: _(test results in checkpoint files; full table pending d5-int completion)_
+**Figure**: `results/exp6_260223_dual_proj_mlp.pdf`
+
+**Results**: _(see checkpoint files and figure)_
 
 ## Experiment 7: SI1000 Noise Model (`google-data` branch, 2026-02-24)
 
@@ -199,8 +208,100 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | GPU | A40 |
 | Cluster | Alvis |
 
-**Jobs**:
-- 5979931: d=3 — **PENDING**
-- 5979932: d=5 — **PENDING**
+**Jobs**: 5979931 (d=3), 5979932 (d=5)
 
-**Results**: _(pending — jobs queued)_
+**Test results** (t=50 only):
+
+| d | p | MWPM P_L | NN P_L | Notes |
+|---|---|----------|--------|-------|
+| 3 | 0.001 | 0.034522 | **0.026608** | NN beats MWPM by 23% |
+| 3 | 0.005 | 0.381714 | **0.348114** | NN slightly better, near threshold |
+| 5 | 0.001 | 0.005635 | 0.046683 | NN 8× worse — model failed to learn |
+| 5 | 0.005 | 0.339386 | 0.491516 | NN near random |
+
+**Observations**:
+- d=3 learned successfully; d=5 failed entirely. Likely cause: random-p batch sampling (see Exp 8 diagnosis) combined with only 200 epochs — the model saw each p too infrequently to converge at d=5. Fixed by stratified sampling in Exp 10.
+
+## Experiment 8: Multi-p Training (`iterative-decoding` branch, 2026-02-24)
+
+**Goal**: Train a single model on a mixture of error rates p ∈ {0.001–0.005} simultaneously, to build a p-generalizing decoder as a first step toward the hierarchical iterative decoding design.
+
+**Branch**: `iterative-decoding` | **Wandb project**: `GNN-iterative-decoding`
+
+| Parameter | Value |
+|-----------|-------|
+| Distance | 3 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| Batch size | 2048 |
+| Batches | 256 |
+| Epochs | 500 |
+| p values | 0.001, 0.002, 0.003, 0.004, 0.005 |
+| Embedding | [3, 64, 256] |
+| Hidden | 256 |
+| GPU | A40 |
+
+**Jobs**: 5978671 (training), 5980002 + 5980183 (testing)
+
+**Training curve instability**: Epoch-level accuracy oscillates with σ ≈ 0.0035, matching σ = std(acc_per_p) / √n_batches = 0.055 / √256 = 0.0034. Each batch drew one p uniformly at random; spread in batch accuracy (≈84–99.6%) propagates to epoch-level noise. **Fix**: stratified sampling — Exp 9.
+
+**Figures**: `results/exp8_260225_d3_training_curve_multi_p.pdf`, `results/exp8_260225_d3_multi_p.pdf`
+
+**Test results** (avg of 2 independent test runs):
+
+| t | NN p=0.001 | NN p=0.002 | NN p=0.003 | NN p=0.004 | NN p=0.005 | MWPM p=0.001 | MWPM p=0.002 | MWPM p=0.003 | MWPM p=0.004 | MWPM p=0.005 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | 0.00388 | 0.00864 | 0.01459 | 0.02175 | 0.03005 | 0.00506 | 0.01135 | 0.01857 | 0.02696 | 0.03618 |
+| 10 | 0.00401 | 0.00990 | 0.01843 | 0.02948 | 0.04327 | 0.00569 | 0.01422 | 0.02542 | 0.03936 | 0.05590 |
+| 20 | 0.00468 | 0.01401 | 0.02912 | 0.04849 | 0.07341 | 0.00709 | 0.02068 | 0.04071 | 0.06726 | 0.09729 |
+| 50 | 0.00816 | 0.02992 | 0.06500 | 0.10728 | 0.16055 | 0.01266 | 0.04455 | 0.09186 | 0.14618 | 0.20705 |
+| 100 | 0.01482 | 0.05777 | 0.12077 | 0.19484 | 0.26689 | 0.02322 | 0.08468 | 0.16651 | 0.25168 | 0.32548 |
+| 200 | 0.02892 | 0.10762 | 0.21217 | 0.31250 | 0.39331 | 0.04579 | 0.15425 | 0.27766 | 0.37788 | 0.43570 |
+| 500 | 0.06925 | 0.22243 | 0.37637 | 0.45695 | 0.48965 | 0.10517 | 0.30402 | 0.43417 | 0.48218 | 0.49839 |
+| 1000 | 0.13509 | 0.34546 | 0.46342 | 0.49663 | 0.50347 | 0.18884 | 0.42421 | 0.48608 | 0.49990 | 0.50117 |
+
+**Observations**:
+- **NN beats MWPM at all p values and all round counts** (t=5–1000). No short-t failure (unlike intermediate/fake-endings mode) — `last` mode BPTT calibrates the decoder at every position.
+- **Good p-generalization**: single model decodes all 5 p values without per-p fine-tuning.
+- **Long-t high-p saturation**: at p≥0.003 and t≥500 both NN and MWPM converge toward P_L=0.5. Expected — d=3 cannot protect against these error rates over 1000 rounds.
+
+### Exp 8.A: d=5 Multi-p Base Model for Hierarchical Decoder (2026-02-26)
+
+Same setup as Exp 8 but d=5, with interleaved sampling (commit `17c4a1e`) and auto-tuned batch size. Intended as the base model for the hierarchical decoder.
+
+| Job | batch_size | n_batches | epochs | Note |
+|-----|------------|-----------|--------|------|
+| 5998426 | 8192 (auto) | 64 | 200 | hier_multip |
+
+**Results**: _(in progress)_
+
+## Experiment 9: Multi-p d=3 with Interleaved Sampling (`iterative-decoding` branch, 2026-02-26)
+
+**Goal**: Repeat Exp 8 with stratified batch sampling (B/n_p shots per error rate per batch) to eliminate p-induced gradient variance. Direct comparison to Exp 8.
+
+**Branch**: `iterative-decoding` | **Wandb project**: `GNN-iterative-decoding`
+
+Same architecture and settings as Exp 8 (d=3, [3,64,256], hidden=256, batch=2048, n_batches=256, 500 epochs). Only difference: interleaved-p sampling from commit `17c4a1e`.
+
+**Job**: 5999004
+
+**Results**: _(in progress)_
+
+## Experiment 10: SI1000 Mixed-p Batch Sampling + Larger GNN (`google-data` branch, 2026-02-26)
+
+**Goal**: Test stratified batch sampling on SI1000 circuits (fixing the d=5 failure in Exp 7), and test a larger GNN architecture.
+
+**Branch**: `google-data` | **Wandb project**: `GNN-google-data`
+
+**Key changes**: interleaved-p `generate_batch()`, `auto_batch_size=True` by default, new `--embedding_features` / `--hidden_size` CLI args.
+
+| Job | d | Note | Architecture | Hidden | Load from |
+|-----|---|------|-------------|--------|-----------|
+| 5999498 | 3 | `interleave_p` | [3, 64, 256] | 256 | 5979931 |
+| 5999499 | 5 | `interleave_p` | [3, 64, 256] | 256 | 5979932 |
+| 5999500 | 3 | `interleave_p_larger_GNN` | [3, 64, 128, 256, 512] | 512 | scratch |
+| 5999501 | 5 | `interleave_p_larger_GNN` | [3, 64, 128, 256, 512] | 512 | scratch |
+
+Common settings: t=50, dt=2, batch=2048 (auto-tuned), n_batches=256, epochs=200, p_list=[0.001, 0.005], SI1000.
+
+**Results**: _(pending)_
