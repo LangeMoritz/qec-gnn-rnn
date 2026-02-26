@@ -165,7 +165,7 @@ if __name__ == "__main__":
     parser.add_argument('--p_list', type=float, nargs='+', default=None,
                         help='Train on a mix of error rates, e.g. --p_list 0.001 0.002 0.003 0.004 0.005')
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--wandb_project', type=str, default='GNN-RNN-hierarchical')
+    parser.add_argument('--wandb_project', type=str, default='GNN-iterative-decoding')
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--auto_batch_size', action='store_true',
                         help='Auto-tune batch size for best GPU throughput (CUDA only)')
@@ -235,11 +235,6 @@ if __name__ == "__main__":
         cli.n_batches = args.n_batches
         print(f"Using batch_size={args.batch_size}, n_batches={args.n_batches}")
 
-    # ── torch.compile ──
-    if device.type == "cuda":
-        meta_model = torch.compile(meta_model)
-        print("torch.compile: enabled")
-
     optim = torch.optim.Adam(
         [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
     )
@@ -249,7 +244,7 @@ if __name__ == "__main__":
 
     date = datetime.now().strftime("%y%m%d")
     run_id = os.environ.get("SLURM_JOB_ID", "") or datetime.now().strftime("%H%M%S")
-    model_name = f"hier_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
+    model_name = f"iterative_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
     if cli.note:
         model_name += f"_{cli.note}"
 

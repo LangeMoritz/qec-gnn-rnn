@@ -251,8 +251,8 @@ Replaced `torch_geometric.nn.pool.knn_graph` with precomputed edge weights:
 
 ## What We Did
 
-### 1. Masked GRU + learned empty embedding + torch.compile (DONE)
-Replaced `pack_padded_sequence`/`pad_sequence` with fixed-size `[B, g_max, embed_dim]` tensor. Static shapes enable `torch.compile(fullgraph=True)` with zero recompilation. Also eliminated `align_labels_to_outputs` for-loop entirely.
+### 1. Masked GRU + learned empty embedding (DONE)
+Replaced `pack_padded_sequence`/`pad_sequence` with fixed-size `[B, g_max, embed_dim]` tensor. Eliminates dynamic-shape overhead and the `align_labels_to_outputs` for-loop entirely. Note: `train_model` calls `self.forward(...)` directly, bypassing `nn.Module.__call__`, so `torch.compile` is never triggered in the training path — the speedup is from static shapes alone.
 
 ### 2. Adaptive stim oversampling (DONE)
 Pilot sample of 10k shots estimates acceptance rate at init. First draw oversampled by `1/accept_rate * 1.1`. Fewer stim calls per batch.
@@ -526,8 +526,7 @@ for thread safety and runs `generate_batch()` in a background thread while the G
 processes the previous batch. The GIL is released during numpy graph construction,
 giving real parallelism. `data_time` in epoch logs measures only queue wait time.
 
-**torch.compile**: enabled on CUDA via `torch.compile(meta_model)` before training.
-Not applied on MPS (limited support).
+**torch.compile**: not applied — Triton is unavailable on Alvis, and the compile call fails lazily on first forward. Speedup instead comes from static shapes (masked GRU), precomputed FC edges, and prefetch.
 
 **Verified patch geometry** (d=5, t=10):
 - Split at `x_mid ± 1` (= 4 and 6): both boundary columns replicated

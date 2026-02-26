@@ -24,9 +24,8 @@ def find_max_inference_batch_size(decoder, args, t, error_rate=None):
     error_rate: probe with this error rate (use max p for worst-case sizing).
                 Defaults to max(args.error_rates) or args.error_rate.
     """
-    # Use uncompiled model: avoids torch.compile recompilation overhead/OOM
-    # during probing, and matches the raw model used for actual inference.
-    raw = getattr(decoder, '_orig_mod', decoder)
+
+    raw = decoder
     probe_p = error_rate if error_rate is not None else (
         max(args.error_rates) if args.error_rates else args.error_rate
     )
@@ -137,8 +136,7 @@ def run_test(decoder, args, test_rounds, test_shots):
             std_mwpm = float(np.sqrt(p_l * (1 - p_l) / total_shots))
             print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
 
-            # NN — use uncompiled model to avoid torch.compile recompilation OOM
-            raw_decoder = getattr(decoder, '_orig_mod', decoder)
+            raw_decoder = decoder
             n_iter = max(1, total_shots // test_batch_size)
             with torch.no_grad():
                 acc, std = raw_decoder.test_model(dataset, n_iter=n_iter, verbose=False)
@@ -257,7 +255,6 @@ if __name__ == "__main__":
 
     logger = TrainingLogger()
     decoder.to(args.device)
-    decoder = torch.compile(decoder)
     history = decoder.train_model(logger, save=model_name, checkpoint_meta=checkpoint_meta)
 
     # ── Optional test ──
