@@ -85,7 +85,6 @@ def run_test(decoder, args, test_rounds, test_shots):
     Returns: {p: {t: {"mwpm": {...}, "nn": {...}}}}
     """
     import pymatching
-    from utils import standard_deviation
 
     error_rates = args.error_rates if args.error_rates else [args.error_rate]
     target_rel_std = 0.01
@@ -185,11 +184,10 @@ if __name__ == "__main__":
     parser.add_argument('--noise_model', type=str, default=None,
                         help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
     parser.add_argument('--hidden_size', type=int, default=256,
-                        help='GRU hidden size and final GNN output dim')
-    parser.add_argument('--gnn_width', type=int, default=64,
-                        help='Intermediate GNN layer width; embedding_features=[3, gnn_width, hidden_size]')
-    parser.add_argument('--n_gru_layers', type=int, default=4,
-                        help='Number of GRU layers')
+                        help='GRU hidden size; also sets the final GNN output dim if --embedding_features not given')
+    parser.add_argument('--embedding_features', type=int, nargs='+', default=None,
+                        help='Full GNN layer sizes including input, e.g. --embedding_features 3 64 128 256 512'
+                             ' (overrides --hidden_size for the GNN)')
     parser.add_argument('--large', action='store_true',
                         help='Use larger GNN: embedding_features=[3,128,512], hidden_size=512')
 
@@ -210,9 +208,9 @@ if __name__ == "__main__":
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,
-        embedding_features=[3, args_cli.gnn_width, args_cli.hidden_size],
+        embedding_features=args_cli.embedding_features or [3, 64, args_cli.hidden_size],
         hidden_size=args_cli.hidden_size,
-        n_gru_layers=args_cli.n_gru_layers,
+        n_gru_layers=4,
         log_wandb=args_cli.wandb,
         wandb_project=args_cli.wandb_project,
         prefetch=not args_cli.no_prefetch,
