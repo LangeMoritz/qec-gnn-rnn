@@ -17,7 +17,7 @@
 | [9](#experiment-9-multi-p-d3-stratified-sampling) | Multi-p d=3 with Stratified Sampling | `iterative-decoding` | 2026-02-26 | in progress |
 | [10](#experiment-10-si1000-stratified-sampling--larger-gnn) | SI1000 Stratified Sampling + Larger GNN | `google-data` | 2026-02-26 | partially tested |
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
-| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | pending |
+| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | running |
 
 ---
 
@@ -481,7 +481,7 @@ _(pending — job 6005022)_
 | Error rate (p) | 0.001 |
 | Batch size | 2048 (auto-tuned) |
 | Batches/epoch | 256 |
-| Epochs | 200 |
+| Epochs | 1000 |
 | meta_hidden | 256 |
 | n_meta_layers | 4 |
 | CNN | 2-layer (Conv2d(embed→H,k=2) + ReLU + Conv2d(H→H,k=1) + ReLU) |
@@ -491,9 +491,9 @@ _(pending — job 6005022)_
 
 | SLURM job | Note | GNN weights | GNN trainable | Status |
 |-----------|------|-------------|---------------|--------|
-| TBD | `ctrl_frozen` | pretrained (Exp 9) | frozen | pending |
-| TBD | `trainable_gnn` | pretrained (Exp 9) | trainable | pending |
-| TBD | `random_gnn` | random init | trainable | pending |
+| 6005298 | `ctrl_frozen` | pretrained (Exp 9) | frozen | running |
+| 6005299 | `trainable_gnn` | pretrained (Exp 9) | trainable | running |
+| 6005300 | `random_gnn` | random init | trainable | running |
 
 ### Commands
 
