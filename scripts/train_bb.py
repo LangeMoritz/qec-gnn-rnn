@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument("--p_list",  type=float, nargs="+", default=None,
                    help="Train on multiple error rates simultaneously")
     p.add_argument("--epochs",  type=int,   default=600)
-    p.add_argument("--batch",   type=int,   default=512)
+    p.add_argument("--batch",   type=int,   default=2048)
     p.add_argument("--nbatch",  type=int,   default=256)
     p.add_argument("--lr",      type=float, default=1e-3)
     p.add_argument("--hidden",  type=int,   default=256)

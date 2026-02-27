@@ -30,7 +30,7 @@ class BBArgs:
             "cpu"
         )
     )
-    batch_size: int = 512
+    batch_size: int = 2048
     n_batches: int = 256
     n_epochs: int = 600
     lr: float = 1e-3

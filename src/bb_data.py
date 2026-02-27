@@ -69,6 +69,7 @@ class BBDataset:
 
         # Build circuits and circuit samplers for each error rate.
         error_rates = args.error_rates if args.error_rates else [args.error_rate]
+        self.circuits = []
         self.samplers = []
         for er in error_rates:
             circ = build_circuit(
@@ -76,6 +77,7 @@ class BBDataset:
                 p=er, num_repeat=self.t,
                 z_basis=True, use_both=True,
             )
+            self.circuits.append(circ)
             self.samplers.append(circ.compile_detector_sampler(seed=args.seed))
 
         # Estimate accept rate (fraction of shots with ≥1 detection event).
