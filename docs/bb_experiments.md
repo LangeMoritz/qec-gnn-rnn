@@ -22,9 +22,9 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 ## Exp BB-1: GRU decoder, [[72,12,6]], baseline run
 
-**Status**: PLANNED
+**Status**: RUNNING — job 6007375
 
-**Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD.
+**Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD-0.
 
 **Setup**:
 - Model: `BBGRUDecoder` (per-round GNN + GRU + k=12 head)
@@ -32,7 +32,13 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 - t = 6 (= code distance), g_max = 7
 - p = 0.001
 - embedding_features = [3, 64, 256], hidden_size = 256, n_gru_layers = 2
-- batch_size = 512, n_batches = 256, n_epochs = 600, lr = 1e-3
+- batch_size = 2048 (auto-tuned), n_batches = 256 (~524K samples/epoch), n_epochs = 500, lr = 1e-3
+- wandb project: `GNN-RNN-BB-codes`
+
+**Changes vs planned**:
+- batch_size raised from 512 → 2048 to match surface code samples/epoch
+- BP-OSD-0 baseline computed once before training, logged as constant reference in wandb
+- `forward()` now handles trivial shots (empty graphs) by hard-coding logit=0
 
 **Expected improvement over old approach**:
 - GRU should capture temporal error propagation
@@ -41,7 +47,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 **Command**:
 ```bash
-python scripts/train_bb.py --code_size 72 --t 6 --p 0.001 --epochs 600 --wandb
+sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes
 ```
 
 ---
