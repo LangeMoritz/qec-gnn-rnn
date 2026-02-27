@@ -336,4 +336,41 @@ Same architecture and settings as Exp 8 (d=3, [3,64,256], hidden=256, batch=2048
 
 Common settings: t=50, dt=2, batch=2048 (auto-tuned), n_batches=256, epochs=200, p_list=[0.001, 0.005], SI1000.
 
-**Results**: _(pending)_
+**Training results** (final training accuracy at epoch 200):
+
+| Job | d | Note | Final acc | MWPM acc |
+|-----|---|------|-----------|----------|
+| 5999498 | 3 | `interleave_p` | 0.8166 | 0.7903 |
+| 5999499 | 5 | `interleave_p` | 0.7354 | 0.8283 |
+| 5999500 | 3 | `interleave_p_larger_GNN` | 0.8176 | 0.7944 |
+| 5999501 | 5 | `interleave_p_larger_GNN` | 0.7576 | 0.8272 |
+
+**Observations** (training curves):
+- d=3 interleave: flatlined from epoch 1 (already converged from Exp7 fine-tune); large GNN converges to same level from scratch
+- d=5 interleave: stable training (variance fixed vs Exp7 random-p); still below MWPM at epoch 200 — needs more training or larger model
+- d=5 large GNN: best d=5 result (0.758), still climbing at epoch 200 → continued in Exp 11
+
+**Test jobs** (t=50 only — only available SI1000 circuit length):
+
+| Job | d | Note | Load from |
+|-----|---|------|-----------|
+| 6005020 | 3 | `test_interleave_p` | 5999498 |
+| 6005021 | 3 | `test_larger_GNN` | 5999500 |
+
+**Test results**: _(pending — jobs 6005020, 6005021)_
+
+**Figure**: `results/exp10_vs_exp7_training_curves.pdf`
+
+## Experiment 11: d=5 Large GNN Continued Training (`google-data` branch, 2026-02-27)
+
+**Goal**: Continue training the best d=5 SI1000 model (Exp10 large GNN, still improving at epoch 200) for 200 more epochs, then test.
+
+**Branch**: `google-data` | **Wandb project**: `GNN-google-data`
+
+| Job | d | Note | Architecture | Hidden | Load from | Epochs |
+|-----|---|------|-------------|--------|-----------|--------|
+| 6005022 | 5 | `interleave_p_larger_GNN_cont` | [3, 64, 128, 256, 512] | 512 | 5999501 | 200 |
+
+Settings: t=50, dt=2, batch=2048 (auto-tuned), n_batches=256, p_list=[0.001, 0.005], SI1000, test at t=50.
+
+**Results**: _(pending — job 6005022)_
