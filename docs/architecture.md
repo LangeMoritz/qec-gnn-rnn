@@ -5,6 +5,7 @@
 - [Fake Endings Implementation](#fake-endings-implementation)
 - [GNN-RNN Architecture](#gnn-rnn-architecture)
 - [Training Speed Optimization](#training-speed-optimization)
+- [Hierarchical Multi-Scale Decoder](#hierarchical-multi-scale-decoder)
 - [p_ij DEM Generation from Google Data](#p_ij-dem-generation-from-google-data)
 
 ---
@@ -251,8 +252,8 @@ Replaced `torch_geometric.nn.pool.knn_graph` with precomputed edge weights:
 
 ## What We Did
 
-### 1. Masked GRU + learned empty embedding (DONE)
-Replaced `pack_padded_sequence`/`pad_sequence` with fixed-size `[B, g_max, embed_dim]` tensor. Eliminates dynamic-shape overhead and the `align_labels_to_outputs` for-loop entirely. Note: `train_model` calls `self.forward(...)` directly, bypassing `nn.Module.__call__`, so `torch.compile` is never triggered in the training path — the speedup is from static shapes alone.
+### 1. Masked GRU + learned empty embedding + torch.compile (DONE)
+Replaced `pack_padded_sequence`/`pad_sequence` with fixed-size `[B, g_max, embed_dim]` tensor. Static shapes enable `torch.compile(fullgraph=True)` with zero recompilation. Also eliminated `align_labels_to_outputs` for-loop entirely.
 
 ### 2. Adaptive stim oversampling (DONE)
 Pilot sample of 10k shots estimates acceptance rate at init. First draw oversampled by `1/accept_rate * 1.1`. Fewer stim calls per batch.
@@ -311,35 +312,25 @@ Expected impact: hide ~model_time per epoch (3-8s), since data >> model the over
 
 ## Auto Batch Size Tuning (DONE)
 
-`find_optimal_batch_size()` (`data.py`) runs at training start on CUDA (enabled by default, `args.auto_batch_size=True`):
+`find_optimal_batch_size()` (`data.py`) runs at training start when `--auto_batch_size` is passed (CUDA only):
 
 1. For each candidate batch_size `[512, 1024, 2048, 4096, 8192, 16384]`:
    - Generate one batch → `data_time`
    - Forward + backward pass → `model_time`
-   - `throughput = batch_size / max(data_time, model_time)` (with prefetch: `/ model_time`)
+   - `throughput = batch_size / max(data_time, model_time)`
 2. OOM stops the search at larger sizes
 3. Picks the candidate with highest throughput
 4. Scales `n_batches` inversely to keep total samples/epoch constant
 
-`find_optimal_batch_size_hierarchical()` in `data.py` uses the same approach for the hierarchical model.
-
 Warmup cost: ~30-60s (6 candidates × ~5-10s each). The bigger lever is **batch_size**: larger batches amortize per-batch Python overhead in graph construction and keep the GPU busier per step.
 
 ```bash
-# Auto-tune is on by default. To disable:
-python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_auto_batch_size
+# Auto-tune example:
+python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
 
 # Disable prefetch:
 python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
 ```
-
-## Mixed-p Batch Sampling (DONE)
-
-When training on multiple error rates (`--p_list`), each batch previously sampled all `B` shots from one randomly-chosen `p`. This caused high gradient variance: each update was tuned to a single `p`, and the epoch-level accuracy oscillated with σ ≈ std(acc_per_p)/√n_batches.
-
-**Fix**: `Dataset.generate_batch()` now splits the batch evenly across all `n_p` error rates — sampling `B // n_p` shots from each sampler (remainder distributed to the first samplers so total == `B` exactly). Detector coordinates and edge weights are identical across error rates (same geometry), so no structural changes are needed downstream.
-
-This eliminates p-induced gradient variance entirely. The per-batch label distribution now consistently reflects all p values, giving smoother training curves and more stable gradients at no throughput cost.
 
 ---
 
@@ -403,113 +394,208 @@ Standalone evaluation is also available via `examples/test_nn.py`.
 
 ---
 
-# Hierarchical Multi-Scale Decoder (Future)
+# Hierarchical Multi-Scale Decoder
 
-## Concept
+## Concept & Motivation
 
-Train a small model on d=3 codes, then recursively compose it into decoders for
-larger distances. At each level, a lower-level model processes 4 spatial patches
-and produces one embedding per patch per round; a 2×2 CNN aggregates those 4
-embeddings into a single meta-embedding, which feeds a meta-GRU.
+The rotated surface code logical Z observable equals the **parity of X errors on
+any horizontal line** through the code — not just the physical top or bottom
+boundary, but any row of data qubits (all are equivalent modulo stabilizers). This
+topological freedom is the key to hierarchical decoding.
 
-```
-Level 0 (d=3):
-  8 stabilizers → GNN → embed_chunks[:, j, :]   (256-dim per chunk, no RNN)
+For d=5 split horizontally at its center: the d=5 logical is exactly the parity of
+X errors crossing the center cut. Each of the two top patches (TL, TR) "owns" the
+south half of that cut; each bottom patch (BL, BR) owns the north half. If every
+patch could reliably predict whether an odd number of X error chains crossed its
+relevant boundary, the d=5 logical would follow directly.
 
-Level 1 (d=5):
-  d=5 split into 2×2 grid of d=3 patches (shared boundary detectors)
-  4 × frozen d=3 GNN → 4 embeddings/chunk, arranged [256, 2, 2]
-  Conv2d(256, 256, 2) → [256] per chunk → meta-GRU → prediction
+**The core problem with a single base model**: a d=3 model trained to predict its
+own d=3 logical observable implicitly targets a full north-to-south crossing. But
+what matters for d=5 is a *partial* crossing — chains that exit through one
+artificial inner boundary without necessarily crossing the full d=3 code. These are
+different events with different syndrome signatures. Using the same representation
+for all four patches conflates the two.
 
-Level 2 (d=9):
-  d=9 split into 2×2 grid of d=5 patches
-  4 × frozen d=5 GNN+meta-GRU stack → 4 embeddings/chunk
-  Conv2d(256, 256, 2) → meta-GRU → prediction
+**Solution**: train two specialized d=3 base models — one per boundary direction —
+and assign them to patches based on which boundary is geometrically relevant for the
+next-level cut. A small meta-CNN+GRU then combines the four patch embeddings.
 
-  ...
-```
-
-The sequence follows d_{n+1} = 2*d_n - 1 (overlapping patches, shared boundary):
+The sequence of code distances follows d_{n+1} = 2·d_n − 1:
 **3 → 5 → 9 → 17 → 33 → ...**
 
-Each step: 4 patches of d=k, sharing 1 row/column of stabilizers on each inner
-boundary, tile exactly into d=2k-1.
+---
+
+## Boundary-Aware Base Models
+
+### Two d=3 base models
+
+Both are standard GNN-RNN decoders (same architecture as `GRUDecoder`), differing
+only in their training label:
+
+| Model | Label | Meaning |
+|-------|-------|---------|
+| `d3_north` | parity of X errors on the **north** data-qubit row | Did error chains exit through the top of this patch? |
+| `d3_south` | parity of X errors on the **south** data-qubit row | Did error chains exit through the bottom of this patch? |
+
+**Label extraction**: add an `OBSERVABLE_INCLUDE` stim instruction on the target
+boundary row of data qubit measurements. For `d3_south`, this is the bottom row of
+data qubits; for `d3_north`, the top row. This is a second observable on top of
+the standard logical observable, extractable from the same circuit with no change
+to the syndrome structure.
+
+**Symmetry note**: `d3_north` and `d3_south` are related by a vertical flip of the
+lattice coordinates. One model may be trained with both labels via coordinate
+augmentation. Whether to use one shared model or two separate ones is an empirical
+question.
+
+**Hard cases**: X error chains spanning the full d=3 patch (weight-d logical
+errors) leave no internal syndromes. The model must infer these from temporal
+context and learned priors. A trainable meta-module at each level corrects for
+residual errors in these hard cases (see Meta-CNN section below).
+
+---
+
+## d=5 Hierarchical Decoder
+
+### Patch assignment
+
+For a d=5 code split at its center into TL/TR/BL/BR patches:
+
+| Patch | Role in d=5 | Base model used |
+|-------|-------------|-----------------|
+| TL | top-left; its **south** = d=5 center cut | `d3_south` |
+| TR | top-right; its **south** = d=5 center cut | `d3_south` |
+| BL | bottom-left; its **north** = d=5 center cut | `d3_north` |
+| BR | bottom-right; its **north** = d=5 center cut | `d3_north` |
+
+Each base model runs frozen and produces a pooled chunk embedding `[B, g_max, H]`
+whose representation is specialized for its assigned boundary direction.
+
+### Meta-CNN + meta-GRU
+
+The four patch embeddings are arranged spatially and aggregated by a 2×2 Conv2d:
+
+```
+┌─────────────┬─────────────┐
+│  TL         │  TR         │   d3_south embeddings (south boundary specialised)
+│  [B,g,H]    │  [B,g,H]    │
+├─────────────┼─────────────┤
+│  BL         │  BR         │   d3_north embeddings (north boundary specialised)
+│  [B,g,H]    │  [B,g,H]    │
+└─────────────┴─────────────┘
+     → [B·g, H, 2, 2]
+     → Conv2d(H, H_meta, kernel_size=2) + ReLU
+     → [B·g, H_meta] → reshape → [B, g, H_meta]
+     → meta-GRU (n_layers, hidden=H_meta)
+     → meta-decoder (Linear + Sigmoid)
+     → d=5 logical prediction
+```
+
+**Training label**: standard d=5 final logical observable. No new label extraction
+needed — the ground truth is the d=5 circuit's existing observable.
+
+**What the meta-CNN learns**: it sees two `d3_south` embeddings (south boundary
+crossing information from TL/TR) and two `d3_north` embeddings (north boundary
+crossing information from BL/BR). For ideal base models the d=5 logical is simply
+XOR(TL_south, TR_south). The meta-CNN learns this combination plus corrections for
+hard cases (full-patch logical errors) where individual patch estimates are noisy.
+
+---
+
+## Scaling to d=9 and Beyond
+
+### Two d=5 models (for d=9)
+
+After verifying the d=5 center-logical model, train two additional d=5 variants:
+
+| Model | Label | d=3 patches used |
+|-------|-------|-----------------|
+| `d5_north` | parity of X errors on d=5 **north** data-qubit row | all 4 patches use `d3_north` |
+| `d5_south` | parity of X errors on d=5 **south** data-qubit row | all 4 patches use `d3_south` |
+
+For `d5_north`: all 4 d=3 patches use `d3_north` (each reports its north boundary
+crossing); the meta-CNN is trained with label = parity of X errors on d=5's top
+data-qubit row. For `d5_south`: same with `d3_south` and the bottom row label.
+
+The d=3 base models remain frozen. Only the meta-CNN weights differ between
+`d5_north`, `d5_south`, and the center-logical d=5 decoder.
+
+### d=9 patch assignment
+
+```
+┌──────────────┬──────────────┐
+│  TL9 (d=5)   │  TR9 (d=5)   │   use d5_south (their south = d=9 center cut)
+├──────────────┼──────────────┤
+│  BL9 (d=5)   │  BR9 (d=5)   │   use d5_north (their north = d=9 center cut)
+└──────────────┴──────────────┘
+     → same Conv2d(H, H, 2) + ReLU + meta-GRU structure
+     → d=9 logical prediction
+```
+
+All d=3 and d=5 weights frozen. New trainable parameters: one Conv2d + one
+meta-GRU + one decoder head — same small module as at d=5.
+
+### General recursion
+
+At every level k (code distance d_k):
+1. Split into 4 patches of d_{k-1} = (d_k + 1) / 2.
+2. Top two patches use `d{k-1}_south`; bottom two use `d{k-1}_north`.
+3. Train a new meta-CNN + meta-GRU with label = d_k logical observable.
+4. Optionally train `d{k}_north` and `d{k}_south` variants (labels = d_k north/south
+   boundary row) for use at level k+1.
+5. Freeze everything at and below level k before training level k+1.
+
+Trainable parameter count per new level: H²·4 (Conv2d) + H²·n_layers·4 (GRU gates).
+Constant regardless of k.
+
+---
 
 ## Geometry
 
-The rotated surface code stabilizer counts:
-- d=3: 8 stabilizers; d=5: 24; d=9: 80; d=17: 288
+Stabilizer counts: d=3: 8 | d=5: 24 | d=9: 80 | d=17: 288 | d=33: 1088
 
-A d=5 code split into 4 d=3 patches:
-- Patches share the central row and column of stabilizers (boundary stabilizers)
-- d=3 patch has 8 stabilizers; 4 patches × 8 = 32 total, minus 8 shared = 24 ✓
-- The split point is at `(x_mid, y_mid)` in stim detector coordinates
+**Boundary detector assignment** (split at midpoint, ±1 overlap):
 
-**Boundary detector assignment** (split at midpoint):
+| Patch | x range | y range |
+|-------|---------|---------|
+| TL | x ≤ x_mid + 1 | y ≤ y_mid + 1 |
+| TR | x ≥ x_mid − 1 | y ≤ y_mid + 1 |
+| BL | x ≤ x_mid + 1 | y ≥ y_mid − 1 |
+| BR | x ≥ x_mid − 1 | y ≥ y_mid − 1 |
 
-| Patch | x | y |
-|-------|---|---|
-| TL | x ≤ x_mid | y ≤ y_mid |
-| TR | x ≥ x_mid | y ≤ y_mid |
-| BL | x ≤ x_mid | y ≥ y_mid |
-| BR | x ≥ x_mid | y ≥ y_mid |
+Boundary detectors replicated into both adjacent patches; coordinates renormalized
+to origin so each patch matches the d=3 training coordinate range.
 
-Boundary detectors (on the split line) are **replicated** to both adjacent patches.
-Corner detectors (at the intersection of both split lines) appear in all 4 patches.
-After assignment, each patch's coordinates are renormalized to the d=3 training
-range so the frozen base model sees familiar input.
+**Verified** (d=5, t=10): split at x_mid ± 1 = {4, 6}; all 4 patches have
+x,y ∈ {0,2,4,6} after renorm; 240/240 d=5 detectors covered.
 
-## Meta-Aggregation: 2×2 CNN
+---
 
-At each round j, the 4 patch embeddings are arranged as a 2×2 spatial map
-with 256 channels — exactly a `[256, 2, 2]` tensor per sample:
+## Model Architecture Summary
 
-```
-┌──────┬──────┐
-│  TL  │  TR  │   each cell: 256-dim GRU embedding from that patch
-├──────┼──────┤
-│  BL  │  BR  │
-└──────┴──────┘
-→ Conv2d(256, H, kernel_size=2)   [kernel covers the full 2×2 grid in one step]
-→ [H, 1, 1] → squeeze → H-dim meta-embedding for round j
-```
+| Level | Trainable | Frozen below | Input |
+|-------|-----------|--------------|-------|
+| d=3 base (`d3_north`, `d3_south`) | GNN + GRU + head | — | raw detectors |
+| d=5 meta (center / north / south) | Conv2d + ReLU + GRU + head | d=3 | 4 × H-dim embeddings |
+| d=9 meta | Conv2d + ReLU + GRU + head | d=3, d=5 | 4 × H-dim embeddings |
+| d=17 meta | Conv2d + ReLU + GRU + head | all below | 4 × H-dim embeddings |
 
-The Conv2d filter has shape `[H, 256, 2, 2]`: it applies a different 256-dim
-weight vector to each of the 4 spatial positions (TL/TR/BL/BR), then sums.
-This is equivalent to a Linear(4×256, H) but with the spatial inductive bias
-that position (TL vs TR vs BL vs BR) is encoded structurally, not by concat order.
+---
 
-Parameter count: `H × 256 × 2 × 2 + H` — same order as one GNN layer.
+## Training Roadmap
 
-## Model Architecture per Level
+| Step | What to train | Label | Status |
+|------|--------------|-------|--------|
+| 1a | `d3_north` | north boundary row parity (stim observable) | TODO |
+| 1b | `d3_south` | south boundary row parity (stim observable) | TODO |
+| 2 | d=5 center meta-CNN | d=5 logical observable | TODO |
+| 3a | `d5_north` meta-CNN | d=5 north row parity | TODO |
+| 3b | `d5_south` meta-CNN | d=5 south row parity | TODO |
+| 4 | d=9 center meta-CNN | d=9 logical observable | TODO |
 
-| Level | Input | Meta-aggregator | meta_hidden | n_meta_gru_layers |
-|-------|-------|-----------------|-------------|-------------------|
-| d=3 | raw detectors | GNN `[3,64,256]` + GRU | 256 | 4 |
-| d=5 | 4 × d=3 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
-| d=9 | 4 × d=5 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
-| d=17 | 4 × d=9 embeddings (256-dim) | Conv2d(256, 256, 2) | 256 | 4 |
+Steps 1–2 are the minimum to demonstrate the approach at d=5.
 
-Same meta-CNN + meta-GRU architecture at every level. Only the frozen stack below
-grows deeper. Trainable parameters per level: ~1 Conv2d + 1 GRU + 1 decoder head.
-
-## Training Strategy
-
-1. **d=3**: train fully. Config: `[3, 64, 256]`, `hidden_size=256`, `n_gru_layers=4`.
-2. **d=5**: freeze d=3 weights. Extract 4 d=3 patches per sample from d=5 circuits.
-   Train Conv2d(256,256,2) + meta-GRU + meta-decoder from scratch.
-3. **d=9**: freeze d=5 stack. Extract 4 d=5 patches per sample from d=9 circuits.
-   Train new Conv2d + meta-GRU + meta-decoder.
-
-At each level, only one small new layer is added. The frozen forward pass through
-lower levels is purely inference — fast even for deep stacks.
-
-## Connection to Renormalization Group
-
-This is a learned RG decoder: each level coarse-grains the error pattern by pooling
-local syndrome graphs into a 256-dim "coarse site", then a higher-level model
-decodes residual long-range correlations. The frozen lower levels implement the
-short-range part of the decoder; the meta-CNN + meta-GRU learn the long-range part.
+---
 
 ## Implementation Status
 
@@ -518,44 +604,18 @@ short-range part of the decoder; the meta-CNN + meta-GRU learn the long-range pa
 | `HierarchicalDataset` (patch extraction) | DONE | `data.py` |
 | `HierarchicalBatchPrefetcher` | DONE | `data.py` |
 | `GRUDecoder.embed_chunks` (GNN only, no RNN) | DONE | `gru_decoder.py` |
-| `MetaGRUDecoder` (CNN + meta-GRU) | DONE | `hierarchical_decoder.py` |
-| `train_hierarchical.py` (prefetch + compile + test) | DONE | `examples/train_hierarchical.py` |
+| `MetaGRUDecoder` (Conv2d + meta-GRU) | DONE | `hierarchical_decoder.py` |
+| `train_hierarchical.py` | DONE | `examples/train_hierarchical.py` |
 | `run_hierarchical.sh` | DONE | `run_hierarchical.sh` |
+| Boundary-row observable extraction (stim) | TODO | `data.py` |
+| Two-base-model patch assignment in `HierarchicalDataset` | TODO | `data.py` |
+| ReLU after Conv2d in `MetaGRUDecoder` | TODO | `hierarchical_decoder.py` |
+| `d3_north` / `d3_south` training | TODO | cluster |
+| `d5_north` / `d5_south` meta-CNN variants | TODO | cluster |
 
-**What the base model contributes**: only the GNN (`embed`), frozen.
-The base GRU is not used — all temporal integration is handled by the meta-GRU.
-The base model's decoder head (`Linear + Sigmoid`) is also discarded.
-
-**Meta-GRU warm start**: if `meta_hidden == hidden_size == embed_dim` (true with
-default args, all 256), the meta-GRU weights are copied from the base model's GRU
-at init. Both process sequential chunk-level embeddings of the same dimension, so
-the pretrained temporal integration is a good starting point.
-
-**Prefetching**: `HierarchicalBatchPrefetcher` owns its own `HierarchicalDataset`
-for thread safety and runs `generate_batch()` in a background thread while the GPU
-processes the previous batch. The GIL is released during numpy graph construction,
-giving real parallelism. `data_time` in epoch logs measures only queue wait time.
-
-**torch.compile**: not applied — Triton is unavailable on Alvis, and the compile call fails lazily on first forward. Speedup instead comes from static shapes (masked GRU), precomputed FC edges, and prefetch.
-
-**Verified patch geometry** (d=5, t=10):
-- Split at `x_mid ± 1` (= 4 and 6): both boundary columns replicated
-- All 4 patches: `x,y ∈ {0,2,4,6}` after renorm — matches d=3 training range exactly
-- 240 of 240 unique d=5 detectors replicated (each in exactly 2 patches)
-
-## Key Open Questions
-
-- **Distribution shift at boundaries**: the frozen d=3 model was trained on full
-  d=3 circuits with physical boundaries on all sides. A patch carved from a d=5
-  circuit has inner boundaries (no physical edge on the shared side). This may
-  degrade base model accuracy. Fix: retrain d=3 on boundary-aware patches.
-- **Boundary detector replication vs assignment**: replication preserves all
-  information but introduces correlated inputs. If this hurts, assign each boundary
-  detector to the patch whose centroid is closer.
-- **Long-range errors**: errors spanning a patch boundary are invisible to the
-  lower-level model and must be decoded by the meta-CNN/GRU. The meta-layer
-  sees all 4 patch embeddings simultaneously, so cross-patch correlations are
-  recoverable in principle.
+**What the base model contributes**: GNN (`embed`) only, frozen. The base GRU is
+not used — all temporal integration is handled by the meta-GRU. The base decoder
+head is discarded.
 
 ---
 
