@@ -1,5 +1,5 @@
 import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from gru_decoder import GRUDecoder
 from data import Args
 import torch
