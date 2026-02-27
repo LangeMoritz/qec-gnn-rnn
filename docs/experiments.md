@@ -478,7 +478,7 @@ _(pending — job 6005022)_
 | Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9, d=3 stratified) |
 | Rounds (t) | 50 |
 | dt | 2 |
-| Error rate (p) | 0.001 |
+| p values | 0.001, 0.002, 0.003, 0.004, 0.005 |
 | Batch size | 2048 (auto-tuned) |
 | Batches/epoch | 256 |
 | Epochs | 1000 |
@@ -491,16 +491,16 @@ _(pending — job 6005022)_
 
 | SLURM job | Note | GNN weights | GNN trainable | Status |
 |-----------|------|-------------|---------------|--------|
-| 6005298 | `ctrl_frozen` | pretrained (Exp 9) | frozen | running |
-| 6005299 | `trainable_gnn` | pretrained (Exp 9) | trainable | running |
-| 6005300 | `random_gnn` | random init | trainable | running |
+| 6005309 | `ctrl_frozen` | pretrained (Exp 9) | frozen | running |
+| 6005310 | `trainable_gnn` | pretrained (Exp 9) | trainable | running |
+| 6005311 | `random_gnn` | random init | trainable | running |
 
 ### Commands
 
 ```bash
-sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 200 ctrl_frozen GNN-iterative-decoding "" test
-sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 200 trainable_gnn GNN-iterative-decoding "" test trainable_base
-sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 200 random_gnn GNN-iterative-decoding "" test trainable_base random_base
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 ctrl_frozen GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 trainable_gnn GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 random_gnn GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base random_base
 ```
 
 ### Results
