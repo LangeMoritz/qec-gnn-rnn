@@ -95,6 +95,10 @@ if __name__ == "__main__":
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--wandb_project', type=str, default='GNN-iterative-decoding')
     parser.add_argument('--note', type=str, default='')
+    parser.add_argument('--trainable_base', action='store_true',
+                        help='Allow base GNN weights to be updated during training')
+    parser.add_argument('--random_base', action='store_true',
+                        help='Use randomly-initialised base GNN (skip loading checkpoint weights)')
     parser.add_argument('--no_auto_batch_size', dest='auto_batch_size', action='store_false',
                         help='Disable auto-tuning of batch size at training start')
     parser.add_argument('--test', action='store_true',
@@ -124,9 +128,12 @@ if __name__ == "__main__":
     )
     base_args.device = device
     base_model = GRUDecoder(base_args).to(device)
-    base_model.load_state_dict(ckpt["state_dict"])
+    if cli.random_base:
+        print(f"Using randomly-initialised base GNN (architecture from: {cli.base_model})")
+    else:
+        base_model.load_state_dict(ckpt["state_dict"])
+        print(f"Loaded base model: {cli.base_model} (d={base_args_dict['distance']})")
     base_model.eval()
-    print(f"Loaded base model: {cli.base_model} (d={base_args_dict['distance']})")
 
     # ── Args for target d=2k-1 circuit ──
     args = Args(
@@ -149,7 +156,11 @@ if __name__ == "__main__":
     del _ds
 
     # ── Meta-model ──
-    meta_model = MetaGRUDecoder(base_model, cli.meta_hidden, cli.n_meta_layers).to(device)
+    meta_model = MetaGRUDecoder(
+        base_model, cli.meta_hidden, cli.n_meta_layers,
+        trainable_base=cli.trainable_base,
+        warm_start_rnn=not cli.random_base,
+    ).to(device)
     n_trainable = sum(p.numel() for p in meta_model.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in meta_model.base_model.parameters())
     print(f"MetaGRUDecoder: {n_trainable:,} trainable params, {n_frozen:,} frozen base params")
@@ -186,6 +197,8 @@ if __name__ == "__main__":
                 "base_model": cli.base_model,
                 "meta_hidden": cli.meta_hidden,
                 "n_meta_layers": cli.n_meta_layers,
+                "trainable_base": cli.trainable_base,
+                "random_base": cli.random_base,
                 "n_trainable": n_trainable,
                 "n_frozen": n_frozen,
             },
@@ -276,6 +289,8 @@ if __name__ == "__main__":
                 "args": vars(args),
                 "meta_hidden": cli.meta_hidden,
                 "n_meta_layers": cli.n_meta_layers,
+                "trainable_base": cli.trainable_base,
+                "random_base": cli.random_base,
                 "history": history,
                 "best_epoch": epoch,
             }, f"./models/{model_name}.pt")

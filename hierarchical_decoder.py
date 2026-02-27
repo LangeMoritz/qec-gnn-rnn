@@ -4,35 +4,53 @@ from gru_decoder import GRUDecoder
 
 
 class MetaGRUDecoder(nn.Module):
-    """Hierarchical decoder: frozen base GNN + 2x2 CNN + meta-GRU.
+    """Hierarchical decoder: base GNN + 2-layer CNN + meta-GRU.
 
     The base GNN (d=k) runs on 4 spatial patches of a d=2k-1 circuit,
     producing one embedding per chunk per patch. These are arranged as a
-    2x2 spatial map, aggregated by Conv2d, then decoded by a meta-GRU.
+    2x2 spatial map, aggregated by a 2-layer CNN, then decoded by a meta-GRU.
 
-    If meta_hidden == base hidden_size == embed_dim, the meta-GRU is
-    warm-started from the base model's GRU weights.
+    Args:
+        base_model:      Pretrained (or randomly-initialised) d=k GRUDecoder.
+        meta_hidden:     Hidden size for the CNN and meta-GRU.
+        n_meta_layers:   Number of meta-GRU layers.
+        trainable_base:  If True, base GNN weights are updated during training.
+        warm_start_rnn:  If True and dimensions match, copy base GRU weights
+                         into the meta-GRU as a warm start.
 
     Patch order: [TL, TR, BL, BR] (row-major, matches HierarchicalDataset).
     """
 
-    def __init__(self, base_model: GRUDecoder, meta_hidden: int = 256, n_meta_layers: int = 4):
+    def __init__(
+        self,
+        base_model: GRUDecoder,
+        meta_hidden: int = 256,
+        n_meta_layers: int = 4,
+        trainable_base: bool = False,
+        warm_start_rnn: bool = True,
+    ):
         super().__init__()
         self.base_model = base_model
         for p in self.base_model.parameters():
-            p.requires_grad_(False)
+            p.requires_grad_(trainable_base)
 
         embed_dim = base_model.args.embedding_features[-1]
         H = base_model.args.hidden_size
 
-        # 2x2 kernel covers the full spatial grid in one step:
-        # [B*g_max, embed_dim, 2, 2] → [B*g_max, meta_hidden, 1, 1]
-        self.spatial_conv = nn.Conv2d(embed_dim, meta_hidden, kernel_size=2)
+        # 2-layer CNN:
+        #   layer 1 — [B*g_max, embed_dim, 2, 2] → [B*g_max, meta_hidden, 1, 1]  (spatial agg)
+        #   layer 2 — [B*g_max, meta_hidden, 1, 1] → [B*g_max, meta_hidden, 1, 1] (feature mix)
+        self.spatial_conv = nn.Sequential(
+            nn.Conv2d(embed_dim, meta_hidden, kernel_size=2),
+            nn.ReLU(),
+            nn.Conv2d(meta_hidden, meta_hidden, kernel_size=1),
+            nn.ReLU(),
+        )
         self.meta_rnn = nn.GRU(meta_hidden, meta_hidden, num_layers=n_meta_layers, batch_first=True)
         self.meta_decoder = nn.Sequential(nn.Linear(meta_hidden, 1), nn.Sigmoid())
 
         # Warm-start meta-GRU from base GRU when dimensions match
-        if meta_hidden == H and meta_hidden == embed_dim:
+        if warm_start_rnn and meta_hidden == H and meta_hidden == embed_dim:
             self._copy_base_rnn_weights()
             print(f"meta-GRU warm-started from base GRU weights (hidden={meta_hidden})")
 
