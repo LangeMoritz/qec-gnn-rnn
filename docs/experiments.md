@@ -626,8 +626,8 @@ _(pending — jobs 6020435, 6020436)_
 
 | SLURM job | Run | Note |
 |-----------|-----|------|
-| TBD | A | `uniform_lr` (profiled) |
-| TBD | B | `uniform_lr_d9` |
+| 6021816 | A | `uniform_lr` (profiled) |
+| 6021817 | B | `uniform_lr_d9` |
 
 ### Commands
 
