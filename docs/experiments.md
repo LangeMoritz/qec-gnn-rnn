@@ -1,8 +1,33 @@
 # Experiment Log
 
-## Experiment 1: MPP Baseline (2026-02-16)
+## Table of Contents
+
+| # | Title | Branch | Date | Status |
+|---|-------|--------|------|--------|
+| [1](#experiment-1-mpp-baseline) | MPP Baseline | `main` | 2026-02-16 | no results recorded |
+| [~~2~~](#experiment-2-fake-endings--invalid) | ~~Fake Endings~~ | `main` | 2026-02-17 | **INVALID** |
+| [3](#experiment-3-fake-endings-first-valid-run) | Fake Endings (first valid run) | `main` | 2026-02-17 | completed |
+| [4](#experiment-4-controlled-comparison-last-vs-fake-endings) | Controlled Comparison: last vs. fake endings | `main` | 2026-02-19/20 | completed + tested |
+| [5](#experiment-5-full-comparison-last-vs-intermediate-all-distances) | Full Comparison: last vs. intermediate, all d | `main` | 2026-02-20 | completed + tested |
+| [6](#experiment-6-dual-post-pooling-mlps) | Dual Post-Pooling MLPs | `dual-proj-mlp` | 2026-02-23 | completed + tested |
+| [7](#experiment-7-si1000-noise-model) | SI1000 Noise Model | `google-data` | 2026-02-24 | completed + tested |
+| [8](#experiment-8-multi-p-training-d3) | Multi-p Training, d=3 | `iterative-decoding` | 2026-02-24 | completed + tested |
+| [8.A](#exp-8a-hierarchical-decoder-d5-first-run) | Hierarchical Decoder d=5 (first run) | `iterative-decoding` | 2026-02-26 | in progress |
+| [8.B](#exp-8b-hierarchical-decoder-d5-updated-codebase) | Hierarchical Decoder d=5 (updated codebase) | `iterative-decoding` | 2026-02-26 | in progress |
+| [9](#experiment-9-multi-p-d3-stratified-sampling) | Multi-p d=3 with Stratified Sampling | `iterative-decoding` | 2026-02-26 | in progress |
+| [10](#experiment-10-si1000-stratified-sampling--larger-gnn) | SI1000 Stratified Sampling + Larger GNN | `google-data` | 2026-02-26 | partially tested |
+| [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
+| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
+| [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
+
+---
+
+## Experiment 1: MPP Baseline
 
 **Goal**: Establish baseline performance of the GNN-RNN decoder with MPP intermediate labels across code distances.
+**Branch**: `main` | **Script**: `run_training.sh` | **Wandb**: —
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
@@ -11,69 +36,89 @@
 | Rounds (t) | 49 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
+| Batches/epoch | 256 |
 | Epochs | 200 |
 | Error rate (p) | 0.001 |
-| GPU | A40 |
-| Cluster | Alvis (NAISS2025-5-525) |
+| GPU | A40 (Alvis) |
 
-**Commands**:
+### Commands
+
 ```bash
 sbatch run_training.sh 3 49 2 2048 256 200 0.001 mpp baseline "" "" test
 sbatch run_training.sh 5 49 2 2048 256 200 0.001 mpp baseline "" "" test
 sbatch run_training.sh 7 49 2 2048 256 200 0.001 mpp baseline "" "" test
 ```
 
-**Results**: _(pending)_
+### Results
 
-## ~~Experiment 2: Fake Endings (2026-02-17)~~ INVALID
+_(SLURM job IDs not recorded; results not available)_
+
+---
+
+## ~~Experiment 2: Fake Endings~~ — INVALID
 
 **Deleted** — `use_fake_endings` was never wired to a CLI flag, so all three runs
-(`d3/d5/d7`, wandb IDs `sqp3hxy8`/`uux2flob`/`h4q5tf0k`) ran with
-`use_fake_endings=False` despite intending to test fake endings.
-Same as plain MPP baseline. Runs deleted from wandb.
+(`d3/d5/d7`, wandb IDs `sqp3hxy8`/`uux2flob`/`h4q5tf0k`) ran with `use_fake_endings=False`
+despite intending to test fake endings. Identical to Exp 1. Runs deleted from wandb.
 
-## Experiment 3: Fake Endings (2026-02-17)
+---
 
-**Goal**: Test fake ending intermediate labels (split-layer RNN, dual loss) vs plain MPP baseline.
+## Experiment 3: Fake Endings (first valid run)
+
+**Goal**: Test fake-ending intermediate labels (split-layer RNN, dual loss) against the plain MPP baseline.
+**Branch**: `main` | **Script**: `run_training.sh` | **Wandb**: `GNN-RNN-train-all-times`
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
-| Label mode | `mpp` |
+| Label mode | `mpp` + `--intermediate` |
 | Fake endings | `True` |
 | Distances | 3, 5, 7 |
 | Rounds (t) | 49 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
-| Epochs | 200 (d3/d5), 100 (d7) |
+| Batches/epoch | 256 |
+| Epochs | 200 (d=3/5), 100 (d=7) |
 | Error rate (p) | 0.001 |
 | Loss weights | `final=1.2`, `fake=1.0` |
+| GPU | A40 (Alvis) |
 
-**Commands**:
+### Commands
+
 ```bash
 sbatch run_training.sh 3 49 2 2048 256 200 0.001 int "" "" GNN-RNN-train-all-times test
 sbatch run_training.sh 5 49 2 2048 256 200 0.001 int "" "" GNN-RNN-train-all-times test
 sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-times test
 ```
 
-**Results** (wandb project `GNN-RNN-train-all-times`):
+### Runs
 
-| Distance | wandb ID | Epochs | Runtime | Best Acc | MWPM Acc | data_time/epoch | model_time/epoch |
-|----------|----------|--------|---------|----------|----------|-----------------|------------------|
-| d=3 | `4biagkbh` | 200 | 8.3h | 0.9919 | 0.9872 | ~72s | ~13s |
-| d=5 | `gym3qnmi` | 200 | 17.8h | 0.9989 | 0.9986 | ~236s | ~18s |
-| d=7 | `1n984kjh` | 89/200 | 18.0h+ | 0.9970 | 0.9999 | ~634s | ~26s |
+| SLURM job | wandb ID | d | Epochs | Best acc | MWPM acc | data_time/epoch | model_time/epoch | Runtime |
+|-----------|---------|---|--------|----------|----------|-----------------|------------------|---------|
+| — | `4biagkbh` | 3 | 200 | 0.9919 | 0.9872 | ~72s | ~13s | 8.3h |
+| — | `gym3qnmi` | 5 | 200 | 0.9989 | 0.9986 | ~236s | ~18s | 17.8h |
+| — | `1n984kjh` | 7 | 89/200 | 0.9970 | 0.9999 | ~634s | ~26s | 18.0h+ |
 
-**Observations**:
-- d3 beats MWPM (99.19% vs 98.72%), d5 roughly on par (99.89% vs 99.86%), d7 still training (not yet converged, below MWPM).
-- Accuracy comparable to `last` mode — intermediate labels + fake endings don't yet show a clear advantage at training-time `t`. The benefit should appear when testing at longer round counts (generalization), but testing crashed before we could see this.
-- **Data generation dominates runtime**: 85–96% of wall time is in `generate_batch()`, not model forward/backward. The fake ending circuit is much larger (extra MPP measurements + fake detectors per round), and `_build_fake_chunks()` had a Python loop over all ~100k (batch, chunk) pairs. Vectorized to loop over ~t unique time values instead.
-- All three runs marked "failed" because **post-training testing crashed** at t=100 with CUDA index out of bounds. Root cause: `self.g_max` was hardcoded from training `args.t=50`, so testing at t=100 produced chunk indices (up to 99) that overflowed the `[B, 50, embed_dim]` tensor in `group()`. Fixed by computing `g_max` dynamically from `label_map` in `forward()`.
+### Results
 
-## Experiment 4: Controlled Comparison — last vs. fake endings vs. sep. embed (2026-02-19/20)
+_(Post-training testing crashed — see observations)_
+
+### Observations
+
+- d=3 beats MWPM (99.19% vs 98.72%), d=5 roughly on par (99.89% vs 99.86%), d=7 not yet converged (below MWPM at 89 epochs).
+- Accuracy comparable to `last` mode — fake endings don't yet show a clear advantage at training-time `t`. Benefit was expected at longer test round counts, but testing crashed before it could be measured.
+- **Data generation dominates runtime** (85–96% of wall time). The fake-ending circuit is much larger; `_build_fake_chunks()` had a Python loop over all ~100k (batch, chunk) pairs — vectorized in a later commit to loop over ~t unique time values instead.
+- **Post-training testing crashed** at t=100 with CUDA index-out-of-bounds. Root cause: `self.g_max` was hardcoded from training `args.t=49`, so chunk indices at t=100 overflowed the `[B, 49, embed_dim]` tensor. Fixed by computing `g_max` dynamically from `label_map` in `forward()`.
+
+---
+
+## Experiment 4: Controlled Comparison — last vs. fake endings
 
 **Goal**: Isolate the effect of fake endings (and separate GNN projection for fake nodes) from training length. Controlled comparison at fixed epochs, distance, and p.
+**Branch**: `main` | **Script**: `run_training.sh` | **Wandb**: `GNN-RNN-train-all-times`
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
@@ -81,24 +126,25 @@ sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-tim
 | Rounds (t) | 50 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
+| Batches/epoch | 256 |
 | Epochs | 100 |
 | Error rate (p) | 0.001 |
-| GPU | A40 |
-| Cluster | Alvis |
+| GPU | A40 (Alvis) |
 
-**Runs** (wandb project `GNN-RNN-train-all-times`):
+### Runs
 
-| Run | SLURM job | wandb ID | Mode | Best Acc | Runtime | model_time/epoch |
-|-----|-----------|----------|------|----------|---------|-----------------|
-| ctrl_last | 5934176 | `c614sy0w` | `last` | 0.9916 | ~1.26h | ~4.4s |
-| ctrl_fake_endings | 5934175 | `o3tyd34g` | `--intermediate` | 0.9915 | ~2.08h | ~17.8s |
-| new_fake_chunks | 5936134 | `8gqpvsmp` | `--intermediate` + sep. embed | 0.9916 | ~2.08h | ~50.3s |
+| SLURM job | wandb ID | Mode | Best acc | Runtime | model_time/epoch |
+|-----------|---------|------|----------|---------|-----------------|
+| 5934176 | `c614sy0w` | `last` | 0.9916 | ~1.26h | ~4.4s |
+| 5934175 | `o3tyd34g` | `--intermediate` | 0.9915 | ~2.08h | ~17.8s |
+| 5936134 | `8gqpvsmp` | `--intermediate` + sep. embed | 0.9916 | ~2.08h | ~50.3s |
 
-**Test results** (1M shots target, d=3, p=0.001):
+### Results
 
-| t | MWPM P_L | last P_L | fake_endings P_L | new_fake_chunks P_L |
-|---|----------|----------|-----------------|---------------------|
+Test results (1M shots, d=3, p=0.001):
+
+| t | MWPM P_L | last P_L | fake_endings P_L | sep_embed P_L |
+|---|----------|----------|-----------------|---------------|
 | 5 | 0.00512 | **0.00421** | 0.01621 | 0.00429 |
 | 10 | 0.00585 | **0.00431** | 0.01116 | 0.00436 |
 | 20 | 0.00732 | **0.00497** | 0.00940 | 0.00512 |
@@ -110,16 +156,22 @@ sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-tim
 
 **Figure**: `results/exp4_260220_ctrl_last_vs_intermediate.pdf`
 
-**Observations**:
-- **`last` dominates at all t ≤ 500**: beats MWPM by 18–31% and outperforms both intermediate modes at every round count tested.
-- **Short-t failure in intermediate modes**: at t=5, `ctrl_fake_endings` is 3.9× worse than MWPM; `new_fake_chunks` is comparable to `last` (separate embedding likely helps here because fake-node features are processed separately, not corrupting the bulk path). At t=20 both modes catch up to MWPM, and at t≥50 they match `last`.
-- **Separate GNN projection for fake nodes** (`new_fake_chunks`): no improvement over `ctrl_fake_endings` at t≥50; slightly better at t<50 but still worse than `last`. Not worth the 3× data generation overhead (~50s vs ~18s per epoch).
-- **Both intermediate modes diverge at t>500**: longer sequences than seen at training cause the fake-branch decoder to extrapolate poorly. `last` mode is more robust here due to direct BPTT from the final position.
-- **Root cause of short-t failure**: model trains at t=50 only; `decoder(bulk_out[:, -1, :])` is always position 49. At test t<50, the last position j<49 was never trained as a direct final predictor — only as a fake-branch intermediate context. Fix: sample t uniformly from {5,10,20,50} per batch during training.
+### Observations
 
-## Experiment 5: Full Comparison — last vs. intermediate across all distances (2026-02-20)
+- **`last` dominates at all t ≤ 500**: beats MWPM by 18–31% and outperforms both intermediate modes at every round count.
+- **Short-t failure in intermediate modes**: at t=5, `fake_endings` is 3.9× worse than MWPM; `sep_embed` is comparable to `last` (separate embedding avoids fake-node features corrupting the bulk path). Both modes catch up to MWPM by t=20 and match `last` at t≥50.
+- **Separate GNN projection** (`sep_embed`): no improvement at t≥50; slightly better at t<50 but still worse than `last`. Not worth the 3× data generation overhead (~50s vs ~18s per epoch).
+- **Both intermediate modes diverge at t>500**: longer sequences than seen during training cause the fake-branch decoder to extrapolate poorly. `last` is more robust due to direct BPTT from the final position.
+- **Root cause of short-t failure**: model trains at t=50 only — `decoder(bulk_out[:, -1, :])` is always position 49. At test t<50, position j<49 was never trained as a direct final predictor. Fix: sample t uniformly from {5,10,20,50} per batch.
 
-**Goal**: Scale the controlled comparison from Experiment 4 to all three code distances (d=3/5/7) with 5× more training epochs, to establish whether intermediate labels / fake endings yield a consistent advantage and whether the short-t failure persists across distances.
+---
+
+## Experiment 5: Full Comparison — last vs. intermediate, all distances
+
+**Goal**: Scale the controlled comparison from Exp 4 to all code distances (d=3/5/7) with 5× more epochs, to establish whether intermediate labels yield a consistent advantage and whether short-t failure persists across distances.
+**Branch**: `main` | **Script**: `run_training.sh` | **Wandb**: `GNN-RNN-train-all-times`
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
@@ -127,13 +179,13 @@ sbatch run_training.sh 7 49 2 2048 256 100 0.001 int "" "" GNN-RNN-train-all-tim
 | Rounds (t) | 50 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
+| Batches/epoch | 256 |
 | Epochs | 500 |
 | Error rate (p) | 0.001 |
-| GPU | A40 |
-| Cluster | Alvis (NAISS2025-5-525) |
+| GPU | A40 (Alvis) |
 
-**Commands**:
+### Commands
+
 ```bash
 sbatch run_training.sh 3 50 2 2048 256 500 0.001 '' '' '' GNN-RNN-train-all-times test
 sbatch run_training.sh 3 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-times test
@@ -143,31 +195,26 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 '' '' '' GNN-RNN-train-all-time
 sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-times test
 ```
 
-**Expected runtimes** (estimated from Exp 3 + Exp 4):
+### Results
 
-| Run | Estimated runtime | Notes |
-|-----|-------------------|-------|
-| d=3 last | ~6h | Exp 4: 1.26h/100 epochs → 6.3h |
-| d=3 int | ~10h | Exp 4: 2.08h/100 epochs → 10.4h |
-| d=5 last | ~18h | ~3× d=3 data scaling |
-| d=5 int | ~30h | ~3× d=3 data scaling |
-| d=7 last | ~40h | ~6–8× d=3 data scaling |
-| d=7 int | ~55h | ~6–8× d=3 data scaling; may approach 3-day wall |
+Summary (full tables in `results/eval_d{3,5,7}_p0.001_intermediate.csv`):
 
-**Figure**: `results/exp5_260223_last_vs_intermediate.pdf` | **Data**: `results/eval_d{3,5,7}_p0.001_intermediate.csv`
+- **d=5, t≥50**: intermediate beats `last` by ~27% and beats MWPM from t=50 onward.
+- **d=3, t≥50**: intermediate ~same as `last`.
+- **d=7**: broken — beats MWPM only up to t=100, then diverges; needs more training.
+- **All d, t<50**: intermediate is 3–38× worse than MWPM; `last` much better (short-t failure, see Exp 4).
+- All three t=1000 test runs crashed with CUDA OOM (fixed in commit `89eb6e0`).
 
-**Results summary** (see CSV + figure for full tables):
-- **d=5 t≥50**: intermediate beats `last` by ~27% and beats MWPM from t=50 onward
-- **d=3 t≥50**: intermediate ~same as `last`
-- **d=7**: broken — beats MWPM only up to t=100, then diverges (needs more training)
-- **All d at t<50**: intermediate is 3–38× worse than MWPM; `last` mode is much better (root cause: short-t failure, see Exp 4 observations)
-- All three runs crashed at t=1000 testing with CUDA OOM (fixed in commit 89eb6e0)
+**Figure**: `results/exp5_260223_last_vs_intermediate.pdf`
 
-## Experiment 6: Dual Post-Pooling MLPs (`dual-proj-mlp` branch, 2026-02-23)
+---
 
-**Goal**: Test whether separate post-pooling projection heads for real vs fake-ending nodes improve performance. Instead of a shared `fake_node_proj`, use `real_proj` and `end_proj` applied after mean-pooling.
+## Experiment 6: Dual Post-Pooling MLPs
 
-**Branch**: `dual-proj-mlp`
+**Goal**: Test whether separate post-pooling projection heads for real vs. fake-ending nodes improve performance (`real_proj` and `end_proj` after mean-pooling, replacing shared `fake_node_proj`).
+**Branch**: `dual-proj-mlp` | **Script**: `run_training.sh` | **Wandb**: `GNN-RNN-train-all-times`
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
@@ -175,42 +222,55 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | Rounds (t) | 50 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
+| Batches/epoch | 256 |
 | Epochs | 500 |
 | Error rate (p) | 0.001 |
-| GPU | A40 |
-| Cluster | Alvis |
+| GPU | A40 (Alvis) |
 
-**Runs** (wandb project `GNN-RNN-train-all-times`):
+### Runs
 
-| Run | SLURM job | Mode | Status | Model checkpoint |
-|-----|-----------|------|--------|-----------------|
-| d3-last | 5973629 | `last` | Completed + tested | `d3_p0.001_t50_dt2_last_260223_5973629_dual-proj.pt` |
-| d3-int | 5973630 | `--intermediate` | Completed + tested | `d3_p0.001_t50_dt2_intermediate_260223_5973630_dual-proj.pt` |
-| d5-last | 5973631 | `last` | Completed + tested | `d5_p0.001_t50_dt2_last_260223_5973631_dual-proj.pt` |
-| d5-int | 5973632 | `--intermediate` | Completed + tested | `d5_p0.001_t50_dt2_intermediate_260223_5973632_dual-proj.pt` |
+| SLURM job | d | Mode | Status | Checkpoint |
+|-----------|---|------|--------|------------|
+| 5973629 | 3 | `last` | completed + tested | `d3_p0.001_t50_dt2_last_260223_5973629_dual-proj.pt` |
+| 5973630 | 3 | `--intermediate` | completed + tested | `d3_p0.001_t50_dt2_intermediate_260223_5973630_dual-proj.pt` |
+| 5973631 | 5 | `last` | completed + tested | `d5_p0.001_t50_dt2_last_260223_5973631_dual-proj.pt` |
+| 5973632 | 5 | `--intermediate` | completed + tested | `d5_p0.001_t50_dt2_intermediate_260223_5973632_dual-proj.pt` |
+
+### Results
+
+_(see checkpoint files and figure)_
 
 **Figure**: `results/exp6_260223_dual_proj_mlp.pdf`
 
-**Results**: _(see checkpoint files and figure)_
+---
 
-## Experiment 7: SI1000 Noise Model (`google-data` branch, 2026-02-24)
+## Experiment 7: SI1000 Noise Model
 
-**Goal**: Train on SI1000 (superconducting-inspired) noise model circuits pre-generated by stim, as a first step toward matching Google's experimental noise model.
+**Goal**: Train on SI1000 (superconducting-inspired) noise model circuits, as a first step toward matching Google's experimental noise model.
+**Branch**: `google-data` | **Script**: `run_training.sh` | **Wandb**: —
 
-**Branch**: `google-data`
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
 | Distances | 3, 5 |
 | Rounds (t) | 50 |
+| dt | 2 |
 | Noise model | SI1000 (circuits from `circuits_ZXXZ/`) |
-| GPU | A40 |
-| Cluster | Alvis |
+| p values | 0.001, 0.005 |
+| Epochs | 200 |
+| GPU | A40 (Alvis) |
 
-**Jobs**: 5979931 (d=3), 5979932 (d=5)
+### Runs
 
-**Test results** (t=50 only):
+| SLURM job | d | Status |
+|-----------|---|--------|
+| 5979931 | 3 | completed + tested |
+| 5979932 | 5 | completed + tested |
+
+### Results
+
+Test results (t=50 only — only available SI1000 circuit length):
 
 | d | p | MWPM P_L | NN P_L | Notes |
 |---|---|----------|--------|-------|
@@ -219,14 +279,18 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | 5 | 0.001 | 0.005635 | 0.046683 | NN 8× worse — model failed to learn |
 | 5 | 0.005 | 0.339386 | 0.491516 | NN near random |
 
-**Observations**:
-- d=3 learned successfully; d=5 failed entirely. Likely cause: random-p batch sampling (see Exp 8 diagnosis) combined with only 200 epochs — the model saw each p too infrequently to converge at d=5. Fixed by stratified sampling in Exp 10.
+### Observations
 
-## Experiment 8: Multi-p Training (`iterative-decoding` branch, 2026-02-24)
+- d=3 learned successfully; d=5 failed entirely. Likely cause: random-p batch sampling (see Exp 8 diagnosis) — the model saw each p too infrequently to converge at d=5. Fixed by stratified sampling in Exp 10.
 
-**Goal**: Train a single model on a mixture of error rates p ∈ {0.001–0.005} simultaneously, to build a p-generalizing decoder as a first step toward the hierarchical iterative decoding design.
+---
 
-**Branch**: `iterative-decoding` | **Wandb project**: `GNN-iterative-decoding`
+## Experiment 8: Multi-p Training, d=3
+
+**Goal**: Train a single model on a mixture of error rates p ∈ {0.001–0.005} simultaneously, to build a p-generalising decoder as a foundation for the hierarchical design.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
 
 | Parameter | Value |
 |-----------|-------|
@@ -234,20 +298,23 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | Rounds (t) | 50 |
 | dt | 2 |
 | Batch size | 2048 |
-| Batches | 256 |
+| Batches/epoch | 256 |
 | Epochs | 500 |
 | p values | 0.001, 0.002, 0.003, 0.004, 0.005 |
-| Embedding | [3, 64, 256] |
-| Hidden | 256 |
-| GPU | A40 |
+| Architecture | [3, 64, 256], hidden=256 |
+| GPU | A40 (Alvis) |
 
-**Jobs**: 5978671 (training), 5980002 + 5980183 (testing)
+### Runs
 
-**Training curve instability**: Epoch-level accuracy oscillates with σ ≈ 0.0035, matching σ = std(acc_per_p) / √n_batches = 0.055 / √256 = 0.0034. Each batch drew one p uniformly at random; spread in batch accuracy (≈84–99.6%) propagates to epoch-level noise. **Fix**: stratified sampling — Exp 9.
+| SLURM job | Purpose | Status |
+|-----------|---------|--------|
+| 5978671 | training | completed |
+| 5980002 | testing (run 1) | completed |
+| 5980183 | testing (run 2) | completed |
 
-**Figures**: `results/exp8_260225_d3_training_curve_multi_p.pdf`, `results/exp8_260225_d3_multi_p.pdf`
+### Results
 
-**Test results** (avg of 2 independent test runs):
+Test results (avg of 2 independent test runs):
 
 | t | NN p=0.001 | NN p=0.002 | NN p=0.003 | NN p=0.004 | NN p=0.005 | MWPM p=0.001 | MWPM p=0.002 | MWPM p=0.003 | MWPM p=0.004 | MWPM p=0.005 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -260,117 +327,264 @@ sbatch run_training.sh 7 50 2 2048 256 500 0.001 int '' '' GNN-RNN-train-all-tim
 | 500 | 0.06925 | 0.22243 | 0.37637 | 0.45695 | 0.48965 | 0.10517 | 0.30402 | 0.43417 | 0.48218 | 0.49839 |
 | 1000 | 0.13509 | 0.34546 | 0.46342 | 0.49663 | 0.50347 | 0.18884 | 0.42421 | 0.48608 | 0.49990 | 0.50117 |
 
-**Observations**:
-- **NN beats MWPM at all p values and all round counts** (t=5–1000). No short-t failure (unlike intermediate/fake-endings mode) — `last` mode BPTT calibrates the decoder at every position.
-- **Good p-generalization**: single model decodes all 5 p values without per-p fine-tuning.
-- **Long-t high-p saturation**: at p≥0.003 and t≥500 both NN and MWPM converge toward P_L=0.5. Expected — d=3 cannot protect against these error rates over 1000 rounds.
+**Figures**: `results/exp8_260225_d3_training_curve_multi_p.pdf`, `results/exp8_260225_d3_multi_p.pdf`
 
-### Exp 8.A: Hierarchical Decoder — d=5 with d=3 Base Model (2026-02-26)
+### Observations
 
-**Goal**: Train the hierarchical `MetaGRUDecoder` (`train_hierarchical.py`) on d=5 using the d=3 multi-p model from Exp 8 as the frozen base. This is the first hierarchical decoder run — not a fresh d=5 model.
+- **NN beats MWPM at all p values and all round counts** (t=5–1000). No short-t failure — `last` mode BPTT calibrates the decoder at every position.
+- **Good p-generalisation**: single model decodes all 5 p values without per-p fine-tuning.
+- **Long-t high-p saturation**: at p≥0.003, t≥500, both NN and MWPM converge toward P_L=0.5 — expected, d=3 cannot protect against these error rates over 1000 rounds.
+- **Training curve instability**: epoch-level accuracy oscillates with σ ≈ 0.0035. Root cause: each batch drew one p uniformly at random; spread in per-p accuracy (≈84–99.6%) propagates to epoch noise. Fix: stratified sampling (Exp 9).
 
-| Parameter | Value |
-|-----------|-------|
-| Script | `train_hierarchical.py` |
-| Base model | `d3_p0.001_t50_dt2_260224_5978671_multi_p` (Exp 8 d=3 multi-p) |
-| Distance | 5 |
-| Rounds (t) | 50 |
-| dt | 2 |
-| p\_list | 0.001, 0.002, 0.003, 0.004, 0.005 |
-| Epochs | 200 |
-| Wandb project | `GNN-iterative-decoding` |
+### Exp 8.A: Hierarchical Decoder d=5 — first run (2026-02-26)
 
-| Job | batch\_size | n\_batches | Note |
-|-----|------------|-----------|------|
-| 5998426 | 8192 (auto) | 64 | hier\_multip |
+**Goal**: First run of `MetaGRUDecoder` on d=5, using the d=3 multi-p model from Exp 8 as the frozen base.
+**Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
 
-**Results**: _(in progress)_
+| SLURM job | Base model | d | p_list | Epochs | Note | Batch size | n_batches | Status |
+|-----------|-----------|---|--------|--------|------|------------|-----------|--------|
+| 5998426 | `d3_p0.001_t50_dt2_260224_5978671_multi_p` | 5 | 0.001–0.005 | 200 | `hier_multip` | 8192 (auto) | 64 | in progress |
 
-### Exp 8.B: Hierarchical Decoder — d=5 with d=3 Base Model, updated codebase (2026-02-26)
+### Exp 8.B: Hierarchical Decoder d=5 — updated codebase (2026-02-26)
 
-Re-run of Exp 8.A with the current state of the `iterative-decoding` branch (commits through `77b7f85`). Same base model, same hyperparameters.
+**Goal**: Re-run of Exp 8.A with codebase commits through `77b7f85`. Same base model and hyperparameters; verifies correctness of recent changes.
+**Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
 
-| Parameter | Value |
-|-----------|-------|
-| Script | `train_hierarchical.py` |
-| Base model | `d3_p0.001_t50_dt2_260224_5978671_multi_p` (Exp 8 d=3 multi-p) |
-| Distance | 5 |
-| Rounds (t) | 50 |
-| dt | 2 |
-| p\_list | 0.001, 0.002, 0.003, 0.004, 0.005 |
-| Epochs | 200 |
-| Wandb project | `GNN-iterative-decoding` |
+| SLURM job | Base model | d | p_list | Epochs | Note | Batch size | n_batches | Status |
+|-----------|-----------|---|--------|--------|------|------------|-----------|--------|
+| 6000782 | `d3_p0.001_t50_dt2_260224_5978671_multi_p` | 5 | 0.001–0.005 | 200 | `hier_multip_v2` | 2048 (auto) | 256 | in progress |
 
-| Job | batch\_size | n\_batches | Note |
-|-----|------------|-----------|------|
-| 6000782 | 2048 (auto) | 256 | hier\_multip\_v2 |
+---
 
-**Results**: _(in progress)_
-
-## Experiment 9: Multi-p d=3 with Interleaved Sampling (`iterative-decoding` branch, 2026-02-26)
+## Experiment 9: Multi-p d=3 with Stratified Sampling
 
 **Goal**: Repeat Exp 8 with stratified batch sampling (B/n_p shots per error rate per batch) to eliminate p-induced gradient variance. Direct comparison to Exp 8.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `GNN-iterative-decoding`
 
-**Branch**: `iterative-decoding` | **Wandb project**: `GNN-iterative-decoding`
+### Setup
 
-Same architecture and settings as Exp 8 (d=3, [3,64,256], hidden=256, batch=2048, n_batches=256, 500 epochs). Only difference: interleaved-p sampling from commit `17c4a1e`.
+Same as Exp 8 (d=3, [3,64,256], hidden=256, batch=2048, n_batches=256, 500 epochs, p ∈ {0.001–0.005}). Only change: interleaved-p sampling (commit `17c4a1e`).
 
-**Job**: 5999004
+### Runs
 
-**Results**: _(in progress)_
+| SLURM job | Note | Status | Checkpoint |
+|-----------|------|--------|------------|
+| 5999004 | — | in progress | `d3_p0.001_t50_dt2_260226_5999004` |
 
-## Experiment 10: SI1000 Mixed-p Batch Sampling + Larger GNN (`google-data` branch, 2026-02-26)
+### Results
 
-**Goal**: Test stratified batch sampling on SI1000 circuits (fixing the d=5 failure in Exp 7), and test a larger GNN architecture.
+_(in progress)_
 
-**Branch**: `google-data` | **Wandb project**: `GNN-google-data`
+---
 
-**Key changes**: interleaved-p `generate_batch()`, `auto_batch_size=True` by default, new `--embedding_features` / `--hidden_size` CLI args.
+## Experiment 10: SI1000 Stratified Sampling + Larger GNN
 
-| Job | d | Note | Architecture | Hidden | Load from |
-|-----|---|------|-------------|--------|-----------|
-| 5999498 | 3 | `interleave_p` | [3, 64, 256] | 256 | 5979931 |
-| 5999499 | 5 | `interleave_p` | [3, 64, 256] | 256 | 5979932 |
-| 5999500 | 3 | `interleave_p_larger_GNN` | [3, 64, 128, 256, 512] | 512 | scratch |
-| 5999501 | 5 | `interleave_p_larger_GNN` | [3, 64, 128, 256, 512] | 512 | scratch |
+**Goal**: Test stratified batch sampling on SI1000 circuits (fixing the d=5 failure in Exp 7) and compare a standard vs. larger GNN architecture.
+**Branch**: `google-data` | **Script**: `run_training.sh` | **Wandb**: `GNN-google-data`
 
-Common settings: t=50, dt=2, batch=2048 (auto-tuned), n_batches=256, epochs=200, p_list=[0.001, 0.005], SI1000.
+### Setup
 
-**Training results** (final training accuracy at epoch 200):
+| Parameter | Value |
+|-----------|-------|
+| Distances | 3, 5 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| Noise model | SI1000 |
+| p values | 0.001, 0.005 |
+| Batch size | 2048 (auto-tuned) |
+| Batches/epoch | 256 |
+| Epochs | 200 |
+| GPU | A40 (Alvis) |
 
-| Job | d | Note | Final acc | MWPM acc |
-|-----|---|------|-----------|----------|
+### Runs
+
+| SLURM job | d | Architecture | Hidden | Load from | Note |
+|-----------|---|-------------|--------|-----------|------|
+| 5999498 | 3 | [3, 64, 256] | 256 | 5979931 | `interleave_p` |
+| 5999499 | 5 | [3, 64, 256] | 256 | 5979932 | `interleave_p` |
+| 5999500 | 3 | [3, 64, 128, 256, 512] | 512 | scratch | `interleave_p_larger_GNN` |
+| 5999501 | 5 | [3, 64, 128, 256, 512] | 512 | scratch | `interleave_p_larger_GNN` |
+
+### Results
+
+Training accuracy at epoch 200:
+
+| SLURM job | d | Note | Final acc | MWPM acc |
+|-----------|---|------|-----------|----------|
 | 5999498 | 3 | `interleave_p` | 0.8166 | 0.7903 |
 | 5999499 | 5 | `interleave_p` | 0.7354 | 0.8283 |
 | 5999500 | 3 | `interleave_p_larger_GNN` | 0.8176 | 0.7944 |
 | 5999501 | 5 | `interleave_p_larger_GNN` | 0.7576 | 0.8272 |
 
-**Observations** (training curves):
-- d=3 interleave: flatlined from epoch 1 (already converged from Exp7 fine-tune); large GNN converges to same level from scratch
-- d=5 interleave: stable training (variance fixed vs Exp7 random-p); still below MWPM at epoch 200 — needs more training or larger model
-- d=5 large GNN: best d=5 result (0.758), still climbing at epoch 200 → continued in Exp 11
+Test jobs (t=50 only):
 
-**Test jobs** (t=50 only — only available SI1000 circuit length):
-
-| Job | d | Note | Load from |
-|-----|---|------|-----------|
-| 6005020 | 3 | `test_interleave_p` | 5999498 |
-| 6005021 | 3 | `test_larger_GNN` | 5999500 |
-
-**Test results**: _(pending — jobs 6005020, 6005021)_
+| SLURM job | d | Note | Load from | Status |
+|-----------|---|------|-----------|--------|
+| 6005020 | 3 | `test_interleave_p` | 5999498 | pending |
+| 6005021 | 3 | `test_larger_GNN` | 5999500 | pending |
 
 **Figure**: `results/exp10_vs_exp7_training_curves.pdf`
 
-## Experiment 11: d=5 Large GNN Continued Training (`google-data` branch, 2026-02-27)
+### Observations
 
-**Goal**: Continue training the best d=5 SI1000 model (Exp10 large GNN, still improving at epoch 200) for 200 more epochs, then test.
+- d=3 interleave: flatlined from epoch 1 (already converged from Exp 7 fine-tune); large GNN reaches same level from scratch.
+- d=5 interleave: stable training (variance fixed vs. Exp 7 random-p); still below MWPM at epoch 200 — needs more training or larger model.
+- d=5 large GNN: best d=5 result (0.758), still climbing at epoch 200 → continued in Exp 11.
 
-**Branch**: `google-data` | **Wandb project**: `GNN-google-data`
+---
 
-| Job | d | Note | Architecture | Hidden | Load from | Epochs |
-|-----|---|------|-------------|--------|-----------|--------|
-| 6005022 | 5 | `interleave_p_larger_GNN_cont` | [3, 64, 128, 256, 512] | 512 | 5999501 | 200 |
+## Experiment 11: d=5 Large GNN Continued Training
 
-Settings: t=50, dt=2, batch=2048 (auto-tuned), n_batches=256, p_list=[0.001, 0.005], SI1000, test at t=50.
+**Goal**: Continue training the best d=5 SI1000 model (Exp 10 large GNN, still improving at epoch 200) for 200 more epochs, then test.
+**Branch**: `google-data` | **Script**: `run_training.sh` | **Wandb**: `GNN-google-data`
 
-**Results**: _(pending — job 6005022)_
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Distance | 5 |
+| Architecture | [3, 64, 128, 256, 512], hidden=512 |
+| Load from | 5999501 (Exp 10) |
+| Rounds (t) | 50 |
+| dt | 2 |
+| Noise model | SI1000 |
+| p values | 0.001, 0.005 |
+| Batch size | 2048 (auto-tuned) |
+| Batches/epoch | 256 |
+| Epochs | 200 (continued) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | d | Note | Status |
+|-----------|---|------|--------|
+| 6005022 | 5 | `interleave_p_larger_GNN_cont` | pending |
+
+### Results
+
+_(pending — job 6005022)_
+
+---
+
+## Experiment 12: Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN
+
+**Goal**: Ablate the contribution of pre-trained base GNN weights and gradient flow in the hierarchical `MetaGRUDecoder`. Three conditions isolate (A) whether the architecture alone suffices with pretrained+frozen base, (B) whether allowing the base GNN to fine-tune improves things, and (C) whether the base GNN's learned representations are actually necessary.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Distance | 5 |
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9, d=3 stratified) |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001, 0.002, 0.003, 0.004, 0.005 |
+| Batch size | 2048 (auto-tuned) |
+| Batches/epoch | 256 |
+| Epochs | 1000 |
+| meta_hidden | 256 |
+| n_meta_layers | 4 |
+| CNN | 2-layer (Conv2d(embed→H,k=2) + ReLU + Conv2d(H→H,k=1) + ReLU) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Note | GNN weights | GNN trainable | Status |
+|-----------|------|-------------|---------------|--------|
+| 6005309 | `ctrl_frozen` | pretrained (Exp 9) | frozen | done |
+| 6005310 | `trainable_gnn` | pretrained (Exp 9) | trainable | done |
+| 6005311 | `random_gnn` | random init | trainable | crashed (CUDA OOM in test loop) |
+| 6018895 | `random_gnn` (test-only resubmit) | — | — | done |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 ctrl_frozen GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 trainable_gnn GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 random_gnn GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base random_base
+```
+
+### Results
+
+**Training results** (avg over last 20 epochs, MWPM ≈ 94.86%, wandb IDs `zjc29y31` / `8jonoyqe` / `3o2nrnfj`):
+
+| Condition | wandb ID | Final acc | MWPM gap | First beats MWPM |
+|-----------|----------|-----------|----------|------------------|
+| Frozen GNN | `zjc29y31` | 96.01% | +1.15% | epoch 390 |
+| Random GNN | `3o2nrnfj` | 96.43% | +1.55% | epoch 214 |
+| Trainable GNN | `8jonoyqe` | 96.73% | +1.87% | epoch 166 |
+
+**Test results** (NN/MWPM ratio at p=0.001; lower=better):
+
+| t | Frozen GNN | Trainable GNN | Random GNN |
+|---|-----------|---------------|------------|
+| 5 | 0.672 | **0.471** | 0.567 |
+| 10 | 0.568 | **0.476** | 0.555 |
+| 20 | 0.497 | **0.421** | 0.489 |
+| 50 | 0.486 | **0.411** | 0.437 |
+| 100 | 0.488 | **0.425** | 0.742 |
+| 200 | 0.467 | **0.417** | 28.3 ✗ |
+
+**Figures**: `results/exp12_training_curves.pdf`, `results/exp12_test_results.pdf`
+
+### Observations
+
+- **Trainable GNN is best overall**: highest final accuracy (+1.87% over MWPM) and fastest convergence (beats MWPM at epoch 166). Pretrained d=3 weights provide a useful initialisation; joint gradient flow fine-tunes both base and meta layers for d=5.
+- **Random GNN beats Frozen GNN** (96.43% vs. 96.01%, MWPM-crossing at epoch 214 vs. 390): freezing the pretrained base is actively harmful. Locked-in d=3 representations are suboptimal for d=5 patch processing; a freely trainable random-init GNN adapts without this constraint.
+- **Trainable GNN shows catastrophic forgetting spikes** in epochs 63–134 (accuracy drops up to 14.7% in a single epoch, e.g. 0.945→0.798 at epoch 63, then 1–3-epoch recovery). Mechanism: d=5 gradients propagating into the pretrained d=3 GNN weights occasionally land in a poor weight region, partially overwriting useful features. Does not occur in frozen (no updates) or random (no useful structure to destroy; max single-epoch drop 4.9%). Spikes cease after epoch ~200 once joint minimum is found (late-stage acc std 0.0008 vs. early 0.0507).
+- **Mitigation**: use separate per-parameter-group LRs (e.g. `1e-5` for base GNN, `1e-4` for meta layers) to allow joint optimisation without catastrophic forgetting.
+- **Recommendation**: use Trainable GNN as the default hierarchical configuration; drop the frozen-base design.
+- **Random GNN fails catastrophically at p=0.001, t=200** (28.3× MWPM): recurrent dynamics become unstable for long sequences at low error rates. At p=0.001, degradation begins at t=100 (0.74×); for p≥0.002 the random GNN stays below MWPM even at t=200 (0.62–0.85×). Root cause: without pretrained base GNN embeddings the model fails to generalise to sequence lengths beyond training (t=50), particularly at low p where the error signal is sparse.
+- **Frozen GNN generalises robustly to t>50**: 0.47–0.57× MWPM across all t, stable extrapolation to t=200. Pretrained base representations encode physical structure and scale to unseen sequence lengths.
+- **Trainable GNN best across all t**: 0.41–0.47× MWPM at p=0.001, consistent at all round counts including t=200.
+
+---
+
+## Experiment 13: Hierarchical: Adaptive LR (d=5) + First d=9 Run
+
+**Goal**: Two parallel objectives: (1) re-run the best Exp 12 configuration (trainable GNN, d=5) with the new per-parameter-group LR schedule to eliminate catastrophic forgetting spikes; (2) first d=9 hierarchical decoder using the Exp 12 trainable-GNN checkpoint as the d=5 base.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### New features since Exp 12
+
+- `MetaGRUDecoder.embed_chunks()` — CNN-only supernode embedding; enables stacking
+- `TwoLevelHierarchicalDataset` — d=9 → 4×4 nested patches (16 d=3 leaves)
+- Per-group LR in `train_hierarchical.py`: d=5 trainable → 2-group (base 1e-5, meta 1e-3); d=9 trainable → 3-group (d=3 1e-5, d=5 1e-4, d=9 1e-3)
+- Auto-detect base checkpoint type from `"meta_hidden"` key
+- `python -u` in all `.sh` scripts for live SLURM log output
+
+### Setup
+
+| Parameter | Run A (d=5 adaptive LR) | Run B (d=9 first run) |
+|-----------|------------------------|----------------------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` (Exp 12 best) |
+| Distance | 5 | 9 |
+| Rounds (t) | 50 | 50 |
+| dt | 2 | 2 |
+| p values | 0.001–0.005 (5 values) | 0.001–0.005 (5 values) |
+| Batch size | 2048 (auto-tuned) | 2048 (auto-tuned) |
+| Batches/epoch | 256 | 256 |
+| Epochs | 1000 | 1000 |
+| meta_hidden | 256 | 256 |
+| n_meta_layers | 4 | 4 |
+| GNN trainable | yes (2-group LR) | yes (3-group LR) |
+| GPU | A40 (Alvis) | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Run | Note |
+|-----------|-----|------|
+| 6020435 | A | `adaptive_lr` |
+| 6020436 | B | `d9_from_exp12` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 adaptive_lr GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 2048 256 1000 d9_from_exp12 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+```
+
+### Results
+
+_(pending)_

@@ -22,7 +22,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 ## Exp BB-1: GRU decoder, [[72,12,6]], baseline run
 
-**Status**: RUNNING — job 6021119 (+1000 epochs, load bb72_t6_p0_001_260302_121943); job 6020878 ran 500 epochs (killed by admins before this but completed ok); earlier crashes: 6019078 killed for GPU idle (BP-OSD at startup, fixed), 6018944 decompose_errors, 6018898 missing B arg, 6007375 missing --wandb_project
+**Status**: RUNNING — job 6021780 (+5000 epochs, load bb72_t6_p0_001_260302_130101); job 6021119 (+1000 epochs, load bb72_t6_p0_001_260302_121943); job 6020878 ran 500 epochs; earlier crashes: 6019078 killed for GPU idle (BP-OSD at startup, fixed), 6018944 decompose_errors, 6018898 missing B arg, 6007375 missing --wandb_project
 
 **Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD-0.
 
@@ -49,6 +49,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 ```bash
 sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes                                           # initial 500 epochs
 sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_121943             # +1000 epochs
+sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_130101             # +5000 epochs (job 6021780)
 ```
 
 ---
