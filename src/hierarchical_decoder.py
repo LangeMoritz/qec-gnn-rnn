@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 from gru_decoder import GRUDecoder
 
+try:
+    profile
+except NameError:
+    def profile(f): return f
+
 
 class MetaGRUDecoder(nn.Module):
     """Hierarchical decoder: base GNN + 2-layer CNN + meta-GRU.
@@ -78,6 +83,7 @@ class MetaGRUDecoder(nn.Module):
                 dst[key].copy_(src[key])
         self.meta_rnn.load_state_dict(dst)
 
+    @profile
     def _embed_patch(self, patch_data, B: int, g_max: int):
         """Embed one spatial patch using the base model.
 
@@ -94,6 +100,7 @@ class MetaGRUDecoder(nn.Module):
                 x, edge_index, edge_attr, labels, label_map, B, g_max
             )
 
+    @profile
     def embed_chunks(self, patch_batches: list, B: int, g_max: int):
         """Spatial supernode embedding — CNN only, no GRU: [B, g_max, meta_hidden].
 
@@ -115,6 +122,7 @@ class MetaGRUDecoder(nn.Module):
         meta_emb = self.spatial_conv(spatial).squeeze(-1).squeeze(-1)   # [B*g_max, meta_hidden]
         return meta_emb.reshape(B, g_max, -1)                           # [B, g_max, meta_hidden]
 
+    @profile
     def forward(self, patch_batches: list, B: int, g_max: int):
         """
         patch_batches: list of 4 patch_data items ordered [TL, TR, BL, BR].

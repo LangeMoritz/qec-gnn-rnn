@@ -266,35 +266,11 @@ if __name__ == "__main__":
                 allow_val_change=True,
             )
 
-    # ── Optimizer with per-group learning rates ──
-    if base_is_meta and cli.trainable_base:
-        # Three LR groups: d=3 GNN (slowest), d=5 meta layers (medium), d=9 meta layers (fastest)
-        d3_params = list(meta_model.base_model.base_model.parameters())
-        d3_ids    = {id(p) for p in d3_params}
-        d5_all_ids = {id(p) for p in meta_model.base_model.parameters()}
-        d5_only_params = [p for p in meta_model.base_model.parameters() if id(p) not in d3_ids]
-        d9_params = [p for p in meta_model.parameters() if id(p) not in d5_all_ids]
-        optim = torch.optim.Adam([
-            {"params": d3_params,      "lr": 1e-5},
-            {"params": d5_only_params, "lr": 1e-4},
-            {"params": d9_params,      "lr": 1e-3},
-        ])
-        print(f"Optimizer: 3-group LR (d=3: 1e-5, d=5: 1e-4, d=9: 1e-3)")
-    elif cli.trainable_base:
-        # Two LR groups: base GNN (slow), meta layers (fast)
-        base_params    = list(meta_model.base_model.parameters())
-        base_ids       = {id(p) for p in base_params}
-        meta_only_params = [p for p in meta_model.parameters() if id(p) not in base_ids]
-        optim = torch.optim.Adam([
-            {"params": base_params,      "lr": 1e-5},
-            {"params": meta_only_params, "lr": 1e-3},
-        ])
-        print(f"Optimizer: 2-group LR (base: 1e-5, meta: 1e-3)")
-    else:
-        optim = torch.optim.Adam(
-            [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
-        )
-        print(f"Optimizer: single LR 1e-3 (meta layers only)")
+    # ── Optimizer ──
+    optim = torch.optim.Adam(
+        [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
+    )
+    print(f"Optimizer: single LR 1e-3 ({n_trainable:,} trainable params)")
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
     )

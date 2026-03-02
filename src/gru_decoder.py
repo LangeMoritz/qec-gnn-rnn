@@ -1,5 +1,10 @@
 import torch, time, os
 import torch.nn as nn
+
+try:
+    profile
+except NameError:
+    def profile(f): return f
 from data import Dataset, BatchPrefetcher, find_optimal_batch_size
 from args import Args
 from utils import GraphConvLayer, TrainingLogger, group, standard_deviation
@@ -36,11 +41,13 @@ class GRUDecoder(nn.Module):
             nn.Sigmoid()
         )
 
+    @profile
     def embed(self, x, edge_index, edge_attr, batch_labels):
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
 
+    @profile
     def embed_chunks(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
         """Return per-chunk GNN embeddings [B, g_max, embed_dim] (no RNN).
 

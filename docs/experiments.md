@@ -19,6 +19,7 @@
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
 | [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
+| [14](#experiment-14-uniform-lr-d5-profiled--d9-resubmit) | Uniform LR resubmit: d=5 (profiled) + d=9 | `iterative-decoding` | 2026-03-02 | in progress |
 
 ---
 
@@ -583,6 +584,56 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 ```bash
 sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 adaptive_lr GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
 sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 2048 256 1000 d9_from_exp12 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+```
+
+### Results
+
+_(pending — jobs 6020435, 6020436)_
+
+---
+
+## Experiment 14: Uniform LR resubmit: d=5 (profiled) + d=9
+
+**Goal**: Resubmit Exp 13 runs with adaptive per-group LR removed (single LR=1e-3 for all trainable params). The d=5 run is instrumented with `kernprof` (`@profile` on `MetaGRUDecoder.{forward,embed_chunks,_embed_patch}` and `GRUDecoder.{embed,embed_chunks}`) to get line-by-line timing for later analysis.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical_profile.sh` (d=5), `run_hierarchical.sh` (d=9) | **Wandb**: `GNN-iterative-decoding`
+
+### Changes since Exp 13
+
+- Per-group LR removed from `train_hierarchical.py`; all trainable params use `lr=1e-3`
+- `@profile` decorators added to key methods (no-op outside `kernprof`)
+- `run_hierarchical_profile.sh` runs via `kernprof -l`, saves `.lprof` to `logs_alvis/profile_<JOBID>.lprof` and prints text stats at end
+
+### Setup
+
+| Parameter | Run A (d=5 + profiling) | Run B (d=9) |
+|-----------|------------------------|-------------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` (Exp 12 best) |
+| Distance | 5 | 9 |
+| Rounds (t) | 50 | 50 |
+| dt | 2 | 2 |
+| p values | 0.001–0.005 (5 values) | 0.001–0.005 (5 values) |
+| Batch size | 2048 (auto-tuned) | 2048 (auto-tuned) |
+| Batches/epoch | 256 | 256 |
+| Epochs | 1000 | 1000 |
+| meta_hidden | 256 | 256 |
+| n_meta_layers | 4 | 4 |
+| LR | 1e-3 uniform | 1e-3 uniform |
+| GNN trainable | yes | yes |
+| Profiling | kernprof (line_profiler) | — |
+| GPU | A40 (Alvis) | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Run | Note |
+|-----------|-----|------|
+| TBD | A | `uniform_lr` (profiled) |
+| TBD | B | `uniform_lr_d9` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical_profile.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 uniform_lr GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 2048 256 1000 uniform_lr_d9 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
 ```
 
 ### Results
