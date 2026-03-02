@@ -16,7 +16,7 @@ source .venv/bin/activate
 # auto_batch_size is on by default; pass --no_auto_batch_size explicitly if needed
 # $13 (p_list): optional space-separated error rates for multi-p training, e.g. "0.001 0.002 0.003 0.004 0.005"
 #               if set, overrides --p for training (--p is still used for model naming)
-python scripts/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
+python -u scripts/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
     ${8:+--intermediate} ${9:+--note "$9"} ${10:+--load_path "${10}"} ${11:+--wandb --wandb_project "${11}"} \
     ${12:+--test} ${13:+--p_list ${13}}
 # sbatch run_training.sh  d  t  dt  batch  nbatch  epochs  p  [intermediate]  [note]  [load_path]  [wandb_project]  [test]  [p_list]

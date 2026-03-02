@@ -504,9 +504,31 @@ hard cases (full-patch logical errors) where individual patch estimates are nois
 
 ## Scaling to d=9 and Beyond
 
-### Two d=5 models (for d=9)
+### Implemented approach: single shared base model
 
-After verifying the d=5 center-logical model, train two additional d=5 variants:
+The boundary-aware design (d3_north / d3_south) is the theoretically motivated
+long-term target. In practice we first validated a simpler single-base approach:
+one shared d=3 GRUDecoder runs on all 4 patches, and the meta-CNN + meta-GRU
+learns to combine them for d=5 prediction. Exp 12 showed this works well.
+
+For d=9 the same recursion applies with `MetaGRUDecoder` as the base:
+
+```
+d=3 GRUDecoder.embed_chunks()          →  [B, g, E]  per patch   (4 patches)
+   ↓  d=5 MetaGRUDecoder.embed_chunks()  →  [B, g, H5] per d=5 chunk  (4 chunks)
+      ↓  d=9 MetaGRUDecoder.forward()    →  [B, g, H9] → meta-GRU → prediction
+```
+
+`embed_chunks()` is the CNN-only part (no GRU) — see `hierarchical_decoder.py`.
+Only the outermost level runs the GRU; inner levels are purely spatial aggregators.
+
+**Key**: `TwoLevelHierarchicalDataset` (d=9) builds 4 outer d=5 patches, each
+split into 4 inner d=3 sub-patches, yielding 16 leaf patches per sample.
+
+### Two d=5 models (future — for boundary-aware d=9)
+
+After verifying the single-base d=5 center-logical model, train two additional
+d=5 variants for the boundary-aware approach:
 
 | Model | Label | d=3 patches used |
 |-------|-------|-----------------|
@@ -520,7 +542,7 @@ data-qubit row. For `d5_south`: same with `d3_south` and the bottom row label.
 The d=3 base models remain frozen. Only the meta-CNN weights differ between
 `d5_north`, `d5_south`, and the center-logical d=5 decoder.
 
-### d=9 patch assignment
+### d=9 patch assignment (boundary-aware, future)
 
 ```
 ┌──────────────┬──────────────┐
@@ -584,16 +606,24 @@ x,y ∈ {0,2,4,6} after renorm; 240/240 d=5 detectors covered.
 
 ## Training Roadmap
 
+### Single-base approach (implemented, Exp 12–13)
+
+| Step | What to train | Label | Status |
+|------|--------------|-------|--------|
+| 1 | d=3 `GRUDecoder` (standard) | d=3 logical observable | DONE (Exp 9) |
+| 2 | d=5 `MetaGRUDecoder`, single shared d=3 base | d=5 logical observable | DONE (Exp 12) |
+| 3 | d=9 `MetaGRUDecoder`, d=5 meta base | d=9 logical observable | IN PROGRESS (Exp 13) |
+
+### Boundary-aware approach (future)
+
 | Step | What to train | Label | Status |
 |------|--------------|-------|--------|
 | 1a | `d3_north` | north boundary row parity (stim observable) | TODO |
 | 1b | `d3_south` | south boundary row parity (stim observable) | TODO |
-| 2 | d=5 center meta-CNN | d=5 logical observable | TODO |
+| 2 | d=5 center meta-CNN (boundary-aware) | d=5 logical observable | TODO |
 | 3a | `d5_north` meta-CNN | d=5 north row parity | TODO |
 | 3b | `d5_south` meta-CNN | d=5 south row parity | TODO |
-| 4 | d=9 center meta-CNN | d=9 logical observable | TODO |
-
-Steps 1–2 are the minimum to demonstrate the approach at d=5.
+| 4 | d=9 center meta-CNN (boundary-aware) | d=9 logical observable | TODO |
 
 ---
 
@@ -601,21 +631,26 @@ Steps 1–2 are the minimum to demonstrate the approach at d=5.
 
 | Component | Status | File |
 |-----------|--------|------|
-| `HierarchicalDataset` (patch extraction) | DONE | `data.py` |
+| `HierarchicalDataset` (d=5 patch extraction) | DONE | `data.py` |
 | `HierarchicalBatchPrefetcher` | DONE | `data.py` |
+| `TwoLevelHierarchicalDataset` (d=9, 4×4 patches) | DONE | `data.py` |
+| `TwoLevelHierarchicalBatchPrefetcher` | DONE | `data.py` |
 | `GRUDecoder.embed_chunks` (GNN only, no RNN) | DONE | `gru_decoder.py` |
-| `MetaGRUDecoder` (Conv2d + meta-GRU) | DONE | `hierarchical_decoder.py` |
-| `train_hierarchical.py` | DONE | `examples/train_hierarchical.py` |
+| `MetaGRUDecoder` (Conv2d + ReLU + meta-GRU) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder.embed_chunks` (CNN only, no GRU) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder._embed_patch` (dispatches on base type) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder.__init__` handles `MetaGRUDecoder` base | DONE | `hierarchical_decoder.py` |
+| `train_hierarchical.py` (auto-detect base type, d=9 support, per-group LR) | DONE | `scripts/train_hierarchical.py` |
 | `run_hierarchical.sh` | DONE | `run_hierarchical.sh` |
+| Per-group LR in optimizer (d=3: 1e-5, d=5: 1e-4, d=9: 1e-3) | DONE | `scripts/train_hierarchical.py` |
 | Boundary-row observable extraction (stim) | TODO | `data.py` |
 | Two-base-model patch assignment in `HierarchicalDataset` | TODO | `data.py` |
-| ReLU after Conv2d in `MetaGRUDecoder` | TODO | `hierarchical_decoder.py` |
 | `d3_north` / `d3_south` training | TODO | cluster |
 | `d5_north` / `d5_south` meta-CNN variants | TODO | cluster |
 
-**What the base model contributes**: GNN (`embed`) only, frozen. The base GRU is
-not used — all temporal integration is handled by the meta-GRU. The base decoder
-head is discarded.
+**What the base model contributes**: `embed_chunks()` (GNN only, no RNN). The base
+GRU is not used in the hierarchical forward pass — all temporal integration is
+handled by the outermost meta-GRU. The base decoder head is discarded.
 
 ---
 
