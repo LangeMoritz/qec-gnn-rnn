@@ -202,7 +202,7 @@ class BBGRUDecoder(nn.Module):
                     circ = build_circuit(code, A_list, B_list,
                                          p=er, num_repeat=self.args.t,
                                          z_basis=True, use_both=True)
-                    dem = circ.detector_error_model(decompose_errors=True)
+                    dem = circ.detector_error_model()
                     H, L, probs = _dem_to_bp_matrices(dem)
 
                     bp = BpOsdDecoder(H, channel_probs=probs,
