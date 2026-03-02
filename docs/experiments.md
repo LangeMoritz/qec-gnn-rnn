@@ -575,8 +575,8 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 
 | SLURM job | Run | Note |
 |-----------|-----|------|
-| TBD | A | `adaptive_lr` |
-| TBD | B | `d9_from_exp12` |
+| 6020435 | A | `adaptive_lr` |
+| 6020436 | B | `d9_from_exp12` |
 
 ### Commands
 
