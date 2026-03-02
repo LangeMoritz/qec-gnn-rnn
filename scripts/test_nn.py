@@ -14,7 +14,7 @@ Usage:
         --shots 1000 --batch_size 100 --rounds 5 10 20
 """
 import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import argparse
 import numpy as np

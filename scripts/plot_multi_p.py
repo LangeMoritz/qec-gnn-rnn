@@ -6,7 +6,7 @@ Usage:
     python examples/plot_multi_p.py logs/d3_p0.001_t50_dt2_260224_5980183_load_5978671.json --out results/multi_p_d3
 """
 import sys, os, json, argparse
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import numpy as np
 import matplotlib.pyplot as plt

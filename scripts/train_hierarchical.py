@@ -1,5 +1,5 @@
 import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 # python examples/train_hierarchical.py --base_model d3_p0.001_t50_dt2_250101_123456 --d 5 --p 0.001 --t 50 --dt 2
 # python examples/train_hierarchical.py --base_model d3_p0.001_t50_dt2_250101_123456 --d 5 --p 0.001 --t 50 --dt 2 --batch_size 32 --n_batches 10 --n_epochs 2
@@ -99,6 +99,8 @@ if __name__ == "__main__":
                         help='Allow base GNN weights to be updated during training')
     parser.add_argument('--random_base', action='store_true',
                         help='Use randomly-initialised base GNN (skip loading checkpoint weights)')
+    parser.add_argument('--load_path', type=str, default=None,
+                        help='Load existing meta-model checkpoint (name only, no path/extension)')
     parser.add_argument('--no_auto_batch_size', dest='auto_batch_size', action='store_false',
                         help='Disable auto-tuning of batch size at training start')
     parser.add_argument('--test', action='store_true',
@@ -165,27 +167,17 @@ if __name__ == "__main__":
     n_frozen = sum(p.numel() for p in meta_model.base_model.parameters())
     print(f"MetaGRUDecoder: {n_trainable:,} trainable params, {n_frozen:,} frozen base params")
 
-    # ── Auto batch size (before torch.compile) ──
-    if cli.auto_batch_size and device.type == 'cuda':
-        optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model)
-        args.n_batches = max(1, args.n_batches * args.batch_size // optimal_bs)
-        args.batch_size = optimal_bs
-        cli.batch_size = optimal_bs
-        cli.n_batches = args.n_batches
-        print(f"Using batch_size={args.batch_size}, n_batches={args.n_batches}")
-
-    optim = torch.optim.Adam(
-        [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
-    )
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
-    )
-
-    date = datetime.now().strftime("%y%m%d")
-    run_id = os.environ.get("SLURM_JOB_ID", "") or datetime.now().strftime("%H%M%S")
-    model_name = f"iterative_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
-    if cli.note:
-        model_name += f"_{cli.note}"
+    if cli.load_path:
+        meta_ckpt = torch.load(f"./models/{cli.load_path}.pt", weights_only=False, map_location=device)
+        getattr(meta_model, '_orig_mod', meta_model).load_state_dict(meta_ckpt["state_dict"])
+        print(f"Loaded meta-model: {cli.load_path}")
+        model_name = cli.load_path
+    else:
+        date = datetime.now().strftime("%y%m%d")
+        run_id = os.environ.get("SLURM_JOB_ID", "") or datetime.now().strftime("%H%M%S")
+        model_name = f"iterative_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
+        if cli.note:
+            model_name += f"_{cli.note}"
 
     mwpm_accuracy = None
     if cli.wandb:
@@ -204,33 +196,54 @@ if __name__ == "__main__":
             },
         )
 
-        # Compute MWPM baseline once as a reference line (full d circuit).
-        error_rates = args.error_rates if args.error_rates else [args.error_rate]
-        max_shots = 10_000_000
-        target_rel_std = 0.01
-        mwpm_p_ls = []
-        for er in error_rates:
-            mwpm_args = deepcopy(args)
-            mwpm_args.error_rates = None
-            mwpm_args.error_rate = er
-            mwpm_ds = HierarchicalDataset(mwpm_args)
-            dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
-            matcher = pymatching.Matching.from_detector_error_model(dem)
-            total_correct = total_shots = 0
-            while total_shots < max_shots:
-                det_events, flips = mwpm_ds._full.sample_syndromes(0)
-                preds = matcher.decode_batch(det_events)
-                total_correct += int(np.sum(preds == flips))
-                total_shots += args.batch_size
-                p_l = 1 - total_correct / total_shots
-                if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
-                    break
-            std = np.sqrt(p_l * (1 - p_l) / total_shots)
-            print(f"MWPM baseline p={er}: P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
-            mwpm_p_ls.append(p_l)
-            del mwpm_ds, matcher
-        mwpm_accuracy = 1 - float(np.mean(mwpm_p_ls))
-        print(f"MWPM baseline avg accuracy={mwpm_accuracy:.6f}")
+    # ── Auto batch size (before torch.compile) ──
+    if cli.auto_batch_size and device.type == 'cuda':
+        optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model)
+        args.n_batches = max(1, args.n_batches * args.batch_size // optimal_bs)
+        args.batch_size = optimal_bs
+        cli.batch_size = optimal_bs
+        cli.n_batches = args.n_batches
+        print(f"Using batch_size={args.batch_size}, n_batches={args.n_batches}")
+        if cli.wandb:
+            wandb.config.update(
+                {"batch_size": args.batch_size, "n_batches": args.n_batches},
+                allow_val_change=True,
+            )
+
+    optim = torch.optim.Adam(
+        [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
+    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
+    )
+
+    # Compute MWPM baseline once as a reference line (full d circuit).
+    error_rates = args.error_rates if args.error_rates else [args.error_rate]
+    max_shots = 10_000_000
+    target_rel_std = 0.01
+    mwpm_p_ls = []
+    for er in error_rates:
+        mwpm_args = deepcopy(args)
+        mwpm_args.error_rates = None
+        mwpm_args.error_rate = er
+        mwpm_ds = HierarchicalDataset(mwpm_args)
+        dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
+        matcher = pymatching.Matching.from_detector_error_model(dem)
+        total_correct = total_shots = 0
+        while total_shots < max_shots:
+            det_events, flips = mwpm_ds._full.sample_syndromes(0)
+            preds = matcher.decode_batch(det_events)
+            total_correct += int(np.sum(preds == flips))
+            total_shots += args.batch_size
+            p_l = 1 - total_correct / total_shots
+            if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
+                break
+        std = np.sqrt(p_l * (1 - p_l) / total_shots)
+        print(f"MWPM baseline p={er}: P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
+        mwpm_p_ls.append(p_l)
+        del mwpm_ds, matcher
+    mwpm_accuracy = 1 - float(np.mean(mwpm_p_ls))
+    print(f"MWPM baseline avg accuracy={mwpm_accuracy:.6f}")
 
     logger = TrainingLogger()
     logger.on_training_begin(args)
@@ -345,15 +358,33 @@ if __name__ == "__main__":
                 print(f"  MWPM   P_L={p_l:.6f} +/- {std_mwpm:.6f} ({total_shots} shots)")
                 del matcher
 
-                # NN
-                n_iter = max(1, total_shots // test_bs)
+                # NN — retry with halved batch size on CUDA OOM
                 correct_nn = 0
-                with torch.no_grad():
-                    for _ in range(n_iter):
-                        patch_batches, last_label, g_max = ds.generate_batch()
-                        _, pred = raw_meta(patch_batches, test_bs, g_max)
-                        correct_nn += (torch.round(pred) == last_label).sum().item()
-                nn_shots = n_iter * test_bs
+                nn_shots = 0
+                cur_bs = test_bs
+                while cur_bs >= 1:
+                    try:
+                        if device.type == 'cuda':
+                            torch.cuda.empty_cache()
+                        ds._full.batch_size = cur_bs
+                        n_iter = max(1, total_shots // cur_bs)
+                        correct_nn = 0
+                        with torch.no_grad():
+                            for _ in range(n_iter):
+                                patch_batches, last_label, g_max = ds.generate_batch()
+                                _, pred = raw_meta(patch_batches, cur_bs, g_max)
+                                correct_nn += (torch.round(pred) == last_label).sum().item()
+                        nn_shots = n_iter * cur_bs
+                        break
+                    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                        if 'out of memory' not in str(e).lower() and not isinstance(e, torch.cuda.OutOfMemoryError):
+                            raise
+                        if device.type == 'cuda':
+                            torch.cuda.empty_cache()
+                        print(f"  [OOM at batch_size={cur_bs}, retrying with {cur_bs // 2}]")
+                        cur_bs //= 2
+                if cur_bs < 1:
+                    raise RuntimeError("Cannot fit even batch_size=1 for NN inference")
                 p_l_nn = 1 - correct_nn / nn_shots
                 std_nn = float(np.sqrt(p_l_nn * (1 - p_l_nn) / nn_shots))
                 print(f"  NN     P_L={p_l_nn:.6f} +/- {std_nn:.6f} ({nn_shots} shots)")
