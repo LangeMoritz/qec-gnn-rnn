@@ -1,3 +1,4 @@
+import json
 import torch
 import torch.nn as nn
 import time
@@ -9,41 +10,21 @@ from tqdm import tqdm
 import wandb
 os.environ["WANDB_SILENT"] = "True"
 
+# Path to the pre-computed BP-OSD baseline cache (repo root).
+# Populate it locally with: python scripts/precompute_bposd.py
+_BPOSD_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "..", "bposd_cache.json")
 
-def _dem_to_bp_matrices(dem):
-    """Extract (H, L, channel_probs) from a stim DEM for BP-OSD decoding.
 
-    Returns:
-        H     : scipy.sparse.csr_matrix  (n_detectors, n_errors)
-        L     : np.ndarray uint8         (n_observables, n_errors)
-        probs : np.ndarray float64       (n_errors,)
-    """
-    from scipy.sparse import lil_matrix
+def _bposd_cache_key(code_size: int, t: int, p: float) -> str:
+    return f"{code_size}_{t}_{p}"
 
-    errors = []
-    for inst in dem.flattened():
-        if inst.type == "error":
-            p    = inst.args_copy()[0]
-            dets = [t.val for t in inst.targets_copy() if t.is_relative_detector_id()]
-            obs  = [t.val for t in inst.targets_copy() if t.is_logical_observable_id()]
-            errors.append((p, dets, obs))
 
-    n_det = dem.num_detectors
-    n_obs = dem.num_observables
-    n_err = len(errors)
-
-    H     = lil_matrix((n_det, n_err), dtype=np.uint8)
-    L     = np.zeros((n_obs, n_err), dtype=np.uint8)
-    probs = np.zeros(n_err)
-
-    for j, (p, dets, obs) in enumerate(errors):
-        probs[j] = p
-        for d in dets:
-            H[d, j] = 1
-        for o in obs:
-            L[o, j] = 1
-
-    return H.tocsr(), L, probs
+def _load_bposd_cache() -> dict:
+    if os.path.exists(_BPOSD_CACHE_PATH):
+        with open(_BPOSD_CACHE_PATH) as f:
+            return json.load(f)
+    return {}
 
 from bb_args import BBArgs
 from bb_data import BBDataset, BBBatchPrefetcher, find_optimal_bb_batch_size
@@ -176,74 +157,38 @@ class BBGRUDecoder(nn.Module):
         dataset = BBDataset(self.args)
 
         # ------------------------------------------------------------------
-        # BP-OSD-0 baseline (computed once, logged as a constant reference)
+        # BP-OSD-0 baseline (loaded from pre-computed cache; never computed
+        # at training time to avoid blocking GPU allocation on the cluster).
+        # Populate the cache locally: python scripts/precompute_bposd.py
         # ------------------------------------------------------------------
         bp_accuracy = None
         if self.args.log_wandb:
-            try:
-                from ldpc import BpOsdDecoder
-                from bb_args import BB_CODE_PARAMS
-                from bb_codes.build_circuit import build_circuit
-                from bb_codes.codes_q import create_bivariate_bicycle_codes
+            error_rates = self.args.error_rates if self.args.error_rates else [self.args.error_rate]
+            cache = _load_bposd_cache()
+            bp_p_ls = []
+            missing = []
+            for er in error_rates:
+                key = _bposd_cache_key(self.args.code_size, self.args.t, er)
+                if key in cache:
+                    bp_p_ls.append(cache[key]["p_l"])
+                    print(f"BP-OSD-0 (cached) p={er}: P_L={cache[key]['p_l']:.6f}  "
+                          f"({cache[key]['shots']} shots)")
+                else:
+                    missing.append(er)
 
-                params       = BB_CODE_PARAMS[self.args.code_size]
-                error_rates  = self.args.error_rates if self.args.error_rates else [self.args.error_rate]
-                max_shots    = 50_000
-                target_rel_std = 0.01
-                bp_p_ls = []
+            if missing:
+                print(f"WARNING: BP-OSD baseline missing from cache for p={missing}. "
+                      f"Run locally:\n"
+                      f"  python scripts/precompute_bposd.py "
+                      f"--code_size {self.args.code_size} "
+                      f"--t {self.args.t} "
+                      f"--p_list {' '.join(str(m) for m in missing)}\n"
+                      f"then commit bposd_cache.json.")
 
-                print("\nComputing BP-OSD-0 baseline...")
-                for er in error_rates:
-                    code, A_list, B_list = create_bivariate_bicycle_codes(
-                        params["l"], params["m"],
-                        params["A_x"], params["A_y"],
-                        params["B_x"], params["B_y"],
-                    )
-                    circ = build_circuit(code, A_list, B_list,
-                                         p=er, num_repeat=self.args.t,
-                                         z_basis=True, use_both=True)
-                    dem = circ.detector_error_model()
-                    H, L, probs = _dem_to_bp_matrices(dem)
-
-                    bp = BpOsdDecoder(H, channel_probs=probs,
-                                      bp_method="min_sum", max_iter=1000,
-                                      osd_method="osd_0", osd_order=0)
-
-                    bp_args = deepcopy(self.args)
-                    bp_args.error_rates = None
-                    bp_args.error_rate  = er
-                    bp_dataset = BBDataset(bp_args)
-
-                    total_correct = 0
-                    total_shots   = 0
-                    while total_shots < max_shots:
-                        det_arr, obs_arr = bp_dataset.sample_syndromes(0)
-                        det_u8  = det_arr.astype(np.uint8)
-                        obs_u8  = obs_arr.astype(np.uint8)
-                        for i in range(len(det_u8)):
-                            correction = bp.decode(det_u8[i])
-                            pred = (L @ correction) % 2
-                            total_correct += int(np.all(pred == obs_u8[i]))
-                        total_shots += len(det_u8)
-                        p_l = 1 - total_correct / total_shots
-                        if p_l > 0:
-                            rel_std = np.sqrt((1 - p_l) / (p_l * total_shots))
-                            if rel_std < target_rel_std:
-                                break
-
-                    p_l = 1 - total_correct / total_shots
-                    std = np.sqrt(p_l * (1 - p_l) / max(total_shots, 1))
-                    print(f"BP-OSD-0 p={er}: P_L={p_l:.6f} ± {std:.6f}  ({total_shots} shots)")
-                    bp_p_ls.append(p_l)
-                    del bp_dataset
-
-                avg_p_l  = float(np.mean(bp_p_ls))
+            if bp_p_ls:
+                avg_p_l = float(np.mean(bp_p_ls))
                 bp_accuracy = 1 - avg_p_l
-                print(f"BP-OSD-0 avg P_L={avg_p_l:.6f} (across {len(error_rates)} error rates)")
-
-            except ImportError:
-                print("Warning: ldpc not installed — skipping BP-OSD-0 baseline. "
-                      "Install with: pip install ldpc")
+                print(f"BP-OSD-0 avg P_L={avg_p_l:.6f} (across {len(bp_p_ls)} error rates)")
 
         optim = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         epoch_offset = len(prior_history)
