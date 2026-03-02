@@ -28,7 +28,7 @@ pip install ldpc --quiet 2>/dev/null
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes "" "0.001 0.003 0.005"
 #   sbatch run_bb_training.sh 72 6 0.001 300 GNN-RNN-BB-codes my_model
 
-python scripts/train_bb.py \
+python -u scripts/train_bb.py \
     --code_size "${1:-72}" \
     --t         "${2:-6}"  \
     --p         "${3:-0.001}" \

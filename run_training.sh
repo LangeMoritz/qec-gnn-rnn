@@ -22,7 +22,7 @@ source .venv/bin/activate
 # $16 (hidden_size):        optional GRU hidden size / final GNN output dim (default: 256)
 # $17 (embedding_features): optional full GNN layer sizes, space-separated, e.g. "3 64 128 256 512"
 #                           (overrides hidden_size for the GNN)
-python scripts/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
+python -u scripts/train_nn.py --d "$1" --t "$2" --dt "$3" --batch_size "$4" --n_batches "$5" --n_epochs "$6" --p "$7" \
     ${8:+--intermediate} ${9:+--note "$9"} ${10:+--load_path "${10}"} ${11:+--wandb --wandb_project "${11}"} \
     ${12:+--test} ${13:+--p_list ${13}} ${14:+--noise_model "${14}"} ${15:+--test_rounds ${15}} \
     ${16:+--hidden_size "${16}"} ${17:+--embedding_features ${17}}
