@@ -205,8 +205,8 @@ class BBGRUDecoder(nn.Module):
 
             epoch_loss = 0.0
             epoch_acc  = 0.0
-            data_time  = 0.0
             model_time = 0.0
+            t_epoch_start = time.perf_counter()
 
             if self.args.prefetch:
                 prefetcher.start(self.args.n_batches)
@@ -217,7 +217,6 @@ class BBGRUDecoder(nn.Module):
             for batch_or_idx in batch_iter:
                 optim.zero_grad()
 
-                t0 = time.perf_counter()
                 if self.args.prefetch:
                     batch = batch_or_idx
                 else:
@@ -225,15 +224,18 @@ class BBGRUDecoder(nn.Module):
                 x, edge_index, batch_labels, label_map, edge_attr, last_label = batch
                 B = last_label.shape[0]
 
+                if self.args.device.type == 'cuda':
+                    torch.cuda.synchronize()
                 t1 = time.perf_counter()
                 final_pred = self.forward(x, edge_index, edge_attr, batch_labels, label_map, B)
                 loss = nn.functional.binary_cross_entropy_with_logits(
                     final_pred, last_label)
                 loss.backward()
                 optim.step()
+                if self.args.device.type == 'cuda':
+                    torch.cuda.synchronize()
                 t2 = time.perf_counter()
 
-                data_time  += t1 - t0
                 model_time += t2 - t1
                 epoch_loss += loss.item()
 
@@ -242,6 +244,7 @@ class BBGRUDecoder(nn.Module):
                 tgt  = last_label.long()
                 epoch_acc += (pred == tgt).all(dim=1).float().mean().item()
 
+            epoch_time = time.perf_counter() - t_epoch_start
             epoch_loss /= self.args.n_batches
             epoch_acc  /= self.args.n_batches
 
@@ -249,8 +252,9 @@ class BBGRUDecoder(nn.Module):
                 "loss":       epoch_loss,
                 "accuracy":   epoch_acc,
                 "lr":         scheduler.get_last_lr()[0],
-                "data_time":  data_time,
                 "model_time": model_time,
+                "data_time":  epoch_time - model_time,
+                "epoch_time": epoch_time,
             }
 
             if self.args.log_wandb:
