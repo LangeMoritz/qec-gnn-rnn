@@ -491,9 +491,10 @@ _(pending — job 6005022)_
 
 | SLURM job | Note | GNN weights | GNN trainable | Status |
 |-----------|------|-------------|---------------|--------|
-| 6005309 | `ctrl_frozen` | pretrained (Exp 9) | frozen | running |
-| 6005310 | `trainable_gnn` | pretrained (Exp 9) | trainable | running |
-| 6005311 | `random_gnn` | random init | trainable | running |
+| 6005309 | `ctrl_frozen` | pretrained (Exp 9) | frozen | done |
+| 6005310 | `trainable_gnn` | pretrained (Exp 9) | trainable | done |
+| 6005311 | `random_gnn` | random init | trainable | crashed (CUDA OOM in test loop) |
+| 6018895 | `random_gnn` (test-only resubmit) | — | — | running |
 
 ### Commands
 
