@@ -239,7 +239,15 @@ Replaced `torch_geometric.nn.pool.knn_graph` with precomputed edge weights:
 
 # Training Speed Optimization
 
-## Baseline Timing (`main` branch, A40 GPU, n_batches=256, batch_size=2048, t=50, dt=2)
+## Timing Metric Definitions (current, after fix)
+
+- `model_time`: total GPU compute time per epoch — `torch.cuda.synchronize()` before/after the forward+backward+optim block, summed across all batches.
+- `data_time`: GPU idle time per epoch = `epoch_time − model_time`. With prefetch on this is prefetch-queue starvation; with prefetch off it is actual data generation time.
+- `epoch_time`: total wall-clock seconds per epoch.
+
+> **Note on tables below**: Measured with **prefetch OFF** using the pre-fix timing code (no CUDA sync; `data_time` was direct generation time; `model_time` slightly underestimated). Use for relative comparisons only.
+
+## Baseline Timing (`main` branch, A40 GPU, n_batches=256, batch_size=2048, t=50, dt=2, prefetch OFF)
 
 | Config | label_mode | data (s) | model (s) | total (s) | data % |
 |--------|-----------|----------|-----------|-----------|--------|
@@ -261,7 +269,7 @@ Pilot sample of 10k shots estimates acceptance rate at init. First draw oversamp
 ### 3. Precomputed fully-connected edges (DONE)
 Replaced per-batch `knn_graph` (PyG KNN search) with precomputed L-inf inverse-square weight matrix. Groups with same size share cached local pair indices.
 
-## Current Timing (`speedup` branch, A40 GPU, same settings)
+## Current Timing (`speedup` branch → merged to `main`, A40 GPU, same settings, prefetch OFF)
 
 ### After masked GRU + adaptive oversampling (before FC edges):
 
@@ -286,6 +294,20 @@ Model time: **54-57x faster** on A40 (torch.compile on CUDA far more effective t
 
 Data now 88-90% of total epoch time. FC edges gave 1.2-1.8x additional data speedup.
 
+## Hierarchical Dataset Speed-up (iterative-decoding branch)
+
+Before the fix, `HierarchicalDataset` (d=5, t=50) on A40 took ~167 s/epoch with **14% GPU utilisation**:
+- `model_time` ~23 s (256 batches × 0.09 s GPU compute)
+- `data_time` (prefetch wait) ~144 s — background thread generating 4 patches sequentially with a Python for-loop over each sample
+
+### Fix 1: Vectorized sliding window
+Replaced `[patch_coord[s] for s in patch_syndromes]` + `get_sliding_window()` B-iteration loop with `np.where(patch_syndromes)` + fully-vectorized chunk expansion (no Python loop). Eliminates 4 × B = 8192 Python iterations per batch.
+
+### Fix 2: Parallel patch building (`ThreadPoolExecutor`)
+The 4 (or 16 for d=9) patch builds are independent; all run concurrently. Since numpy C ops release the GIL this gives real multi-core parallelism.
+
+**Expected result**: data generation per batch falls below GPU compute (~0.09 s), prefetcher fully hides it, GPU utilisation approaches 100%.
+
 ## MPS Benchmark (MacBook, 20 batches)
 
 On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x on CUDA):
@@ -306,9 +328,9 @@ On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x
 - **GIL-friendly**: numpy C operations (FC edges, sliding window) release the GIL → real parallelism
 - **Sentinel-based**: `None` signals end of epoch; queue is drained between epochs
 
-Enabled by default (`--no_prefetch` to disable). With prefetch, `data_time` in epoch logs measures only the queue wait time (time GPU was idle waiting for data), not total data generation time.
+Enabled by default (`--no_prefetch` to disable). With the corrected timing, `data_time = epoch_time − model_time` now correctly reflects GPU idle time (prefetch queue starvation), not queue-unpack time.
 
-Expected impact: hide ~model_time per epoch (3-8s), since data >> model the overlap saves ~10-15%.
+With the hierarchical vectorize+parallel fix, data generation is faster than GPU compute, so prefetch fully hides it and `data_time ≈ 0`.
 
 ## Auto Batch Size Tuning (DONE)
 

@@ -7,6 +7,7 @@ from enum import Enum
 from threading import Thread, Event
 from queue import Queue, Empty
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from args import Args
 
 
@@ -411,8 +412,8 @@ class HierarchicalDataset:
         sampler_t = full._sampler_t[0]  # identical for all error rates
         g_max = sampler_t - full.dt + 2
 
-        patch_batches = [
-            self._build_patch_batch(
+        def _build(p):
+            return self._build_patch_batch(
                 syndromes[:, self.patch_indices[p]],
                 self._patch_coords[p],
                 self._patch_pos_idx[p],
@@ -420,8 +421,9 @@ class HierarchicalDataset:
                 self._patch_local_pairs[p],
                 sampler_t,
             )
-            for p in range(4)
-        ]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            patch_batches = list(executor.map(_build, range(4)))
         return patch_batches, last_label, g_max
 
     def _build_patch_batch(
@@ -433,21 +435,48 @@ class HierarchicalDataset:
         local_pairs: dict,
         sampler_t: int,
     ):
-        B = self.batch_size
         dt = self._full.dt
         g_max = sampler_t - dt + 2
 
-        node_features_list = [patch_coord[s] for s in patch_syndromes]
-        node_features_list, chunk_labels = self._full.get_sliding_window(
-            node_features_list, sampler_t
-        )
+        # Vectorized sliding window: work directly on the [B, n_patch_det] bool array
+        # instead of looping over each sample individually.
+        b_idx, d_idx = np.where(patch_syndromes)  # (n_hits,) each
 
-        batch_labels = np.repeat(np.arange(B), [len(f) for f in node_features_list])
-        coords_int = np.vstack(node_features_list)  # (0,3) when all empty
-        node_features_float = coords_int.astype(np.float32)
+        if len(b_idx) > 0:
+            t_global = patch_coord[d_idx, 2].astype(np.int64)
 
-        if len(batch_labels) > 0:
-            combined = batch_labels.astype(np.int64) * g_max + chunk_labels.astype(np.int64)
+            # Each detector at time t belongs to chunks j where:
+            #   max(0, t-dt+1) <= j <= min(t, sampler_t-dt+1)
+            j_lo = np.maximum(0, t_global - dt + 1)
+            j_hi = np.minimum(t_global, sampler_t - dt + 1)
+            n_reps = j_hi - j_lo + 1  # 1 or dt per hit
+
+            # Expand each hit to all its chunk memberships
+            total = int(n_reps.sum())
+            rep_b = np.repeat(b_idx, n_reps)
+            rep_d = np.repeat(d_idx, n_reps)
+
+            # Offsets within each hit's chunk range: [0..n_reps[i]-1] per hit
+            cum = np.empty(len(n_reps), dtype=np.int64)
+            cum[0] = 0
+            np.cumsum(n_reps[:-1], out=cum[1:])
+            offsets = np.arange(total, dtype=np.int64) - np.repeat(cum, n_reps)
+
+            j_vals = np.repeat(j_lo, n_reps) + offsets
+            t_local = np.repeat(t_global, n_reps) - j_vals
+
+            xy = patch_coord[rep_d, :2]
+            coords_int = np.column_stack([xy[:, 0], xy[:, 1], t_local]).astype(np.int64)
+
+            # Sort by (batch, chunk) for the grouping step
+            sort_key = rep_b.astype(np.int64) * g_max + j_vals
+            sort_idx = np.argsort(sort_key, kind='stable')
+            coords_int = coords_int[sort_idx]
+            batch_labels = rep_b[sort_idx]
+            chunk_labels = j_vals[sort_idx]
+            node_features_float = coords_int.astype(np.float32)
+
+            combined = batch_labels * g_max + chunk_labels
             change = np.empty(len(combined), dtype=bool)
             change[0] = True
             change[1:] = combined[1:] != combined[:-1]
@@ -458,6 +487,8 @@ class HierarchicalDataset:
             )
             labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
         else:
+            coords_int = np.zeros((0, 3), dtype=np.int64)
+            node_features_float = np.zeros((0, 3), dtype=np.float32)
             group_starts = np.array([], dtype=np.int64)
             group_sizes = np.array([], dtype=np.int64)
             label_map = np.zeros((0, 2), dtype=np.int64)
@@ -593,23 +624,26 @@ class TwoLevelHierarchicalDataset(HierarchicalDataset):
         last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=full.device)
         sampler_t = full._sampler_t[0]
 
-        patch_batches = []
-        for i_outer in range(4):
-            outer_syndromes = syndromes[:, self.patch_indices[i_outer]]  # [B, n_outer_det]
-            sub_patches = []
-            for i_inner in range(4):
-                inner_local_idx = self.sub_patch_local_indices[i_outer][i_inner]
-                inner_syndromes = outer_syndromes[:, inner_local_idx]    # [B, n_inner_det]
-                tup = self._build_patch_batch(
-                    inner_syndromes,
-                    self.sub_patch_coords[i_outer][i_inner],
-                    self.sub_patch_pos_idx[i_outer][i_inner],
-                    self.sub_patch_edge_weights[i_outer][i_inner],
-                    self.sub_patch_local_pairs[i_outer][i_inner],
-                    sampler_t,
-                )
-                sub_patches.append(tup)
-            patch_batches.append(sub_patches)
+        def _build_inner(task):
+            i_outer, i_inner = task
+            outer_syn = syndromes[:, self.patch_indices[i_outer]]
+            inner_syn = outer_syn[:, self.sub_patch_local_indices[i_outer][i_inner]]
+            return self._build_patch_batch(
+                inner_syn,
+                self.sub_patch_coords[i_outer][i_inner],
+                self.sub_patch_pos_idx[i_outer][i_inner],
+                self.sub_patch_edge_weights[i_outer][i_inner],
+                self.sub_patch_local_pairs[i_outer][i_inner],
+                sampler_t,
+            )
+
+        tasks = [(i_outer, i_inner) for i_outer in range(4) for i_inner in range(4)]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(_build_inner, tasks))
+
+        patch_batches = [[None] * 4 for _ in range(4)]
+        for (i_outer, i_inner), tup in zip(tasks, results):
+            patch_batches[i_outer][i_inner] = tup
 
         g_max = sampler_t - full.dt + 2
         assert len(patch_batches) == 4 and len(patch_batches[0]) == 4, \

@@ -339,14 +339,16 @@ if __name__ == "__main__":
         meta_model.train()
         base_model.eval()
 
-        epoch_loss = epoch_acc = data_time = model_time = 0.0
+        epoch_loss = epoch_acc = model_time = 0.0
+        t_epoch_start = time.perf_counter()
 
         prefetcher.start(cli.n_batches)
         for batch in prefetcher:
             optim.zero_grad()
 
-            t0 = time.perf_counter()
             patch_batches, last_label, g_max = batch
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             t1 = time.perf_counter()
 
             _, final_prediction = meta_model(patch_batches, cli.batch_size, g_max)
@@ -354,19 +356,22 @@ if __name__ == "__main__":
             loss.backward()
             optim.step()
 
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             t2 = time.perf_counter()
-            data_time += t1 - t0
             model_time += t2 - t1
             epoch_loss += loss.item()
             epoch_acc += (torch.round(final_prediction) == last_label).float().mean().item()
 
+        epoch_time = time.perf_counter() - t_epoch_start
         epoch_loss /= cli.n_batches
         epoch_acc /= cli.n_batches
-        data_time /= cli.n_batches
-        model_time /= cli.n_batches
         metrics = {
             "loss": epoch_loss, "accuracy": epoch_acc,
-            "lr": scheduler.get_last_lr()[0], "data_time": data_time, "model_time": model_time,
+            "lr": scheduler.get_last_lr()[0],
+            "model_time": model_time,
+            "data_time": epoch_time - model_time,
+            "epoch_time": epoch_time,
         }
         if cli.wandb:
             wandb.log({**metrics, "mwpm_accuracy": mwpm_accuracy})
