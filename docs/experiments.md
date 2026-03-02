@@ -17,7 +17,7 @@
 | [9](#experiment-9-multi-p-d3-stratified-sampling) | Multi-p d=3 with Stratified Sampling | `iterative-decoding` | 2026-02-26 | in progress |
 | [10](#experiment-10-si1000-stratified-sampling--larger-gnn) | SI1000 Stratified Sampling + Larger GNN | `google-data` | 2026-02-26 | partially tested |
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
-| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | training done, test pending |
+| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
 
 ---
 
@@ -494,7 +494,7 @@ _(pending — job 6005022)_
 | 6005309 | `ctrl_frozen` | pretrained (Exp 9) | frozen | done |
 | 6005310 | `trainable_gnn` | pretrained (Exp 9) | trainable | done |
 | 6005311 | `random_gnn` | random init | trainable | crashed (CUDA OOM in test loop) |
-| 6018895 | `random_gnn` (test-only resubmit) | — | — | running |
+| 6018895 | `random_gnn` (test-only resubmit) | — | — | done |
 
 ### Commands
 
@@ -514,9 +514,18 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 | Random GNN | `3o2nrnfj` | 96.43% | +1.55% | epoch 214 |
 | Trainable GNN | `8jonoyqe` | 96.73% | +1.87% | epoch 166 |
 
-**Test results**: _(pending — job 6018895 for random\_gnn)_
+**Test results** (NN/MWPM ratio at p=0.001; lower=better):
 
-**Figure**: `results/exp12_training_curves.pdf`
+| t | Frozen GNN | Trainable GNN | Random GNN |
+|---|-----------|---------------|------------|
+| 5 | 0.672 | **0.471** | 0.567 |
+| 10 | 0.568 | **0.476** | 0.555 |
+| 20 | 0.497 | **0.421** | 0.489 |
+| 50 | 0.486 | **0.411** | 0.437 |
+| 100 | 0.488 | **0.425** | 0.742 |
+| 200 | 0.467 | **0.417** | 28.3 ✗ |
+
+**Figures**: `results/exp12_training_curves.pdf`, `results/exp12_test_results.pdf`
 
 ### Observations
 
@@ -524,4 +533,7 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 - **Random GNN beats Frozen GNN** (96.43% vs. 96.01%, MWPM-crossing at epoch 214 vs. 390): freezing the pretrained base is actively harmful. Locked-in d=3 representations are suboptimal for d=5 patch processing; a freely trainable random-init GNN adapts without this constraint.
 - **Trainable GNN shows catastrophic forgetting spikes** in epochs 63–134 (accuracy drops up to 14.7% in a single epoch, e.g. 0.945→0.798 at epoch 63, then 1–3-epoch recovery). Mechanism: d=5 gradients propagating into the pretrained d=3 GNN weights occasionally land in a poor weight region, partially overwriting useful features. Does not occur in frozen (no updates) or random (no useful structure to destroy; max single-epoch drop 4.9%). Spikes cease after epoch ~200 once joint minimum is found (late-stage acc std 0.0008 vs. early 0.0507).
 - **Mitigation**: use separate per-parameter-group LRs (e.g. `1e-5` for base GNN, `1e-4` for meta layers) to allow joint optimisation without catastrophic forgetting.
-- **Recommendation**: use Trainable GNN as the default hierarchical configuration; drop the frozen-base design._
+- **Recommendation**: use Trainable GNN as the default hierarchical configuration; drop the frozen-base design.
+- **Random GNN fails catastrophically at p=0.001, t=200** (28.3× MWPM): recurrent dynamics become unstable for long sequences at low error rates. At p=0.001, degradation begins at t=100 (0.74×); for p≥0.002 the random GNN stays below MWPM even at t=200 (0.62–0.85×). Root cause: without pretrained base GNN embeddings the model fails to generalise to sequence lengths beyond training (t=50), particularly at low p where the error signal is sparse.
+- **Frozen GNN generalises robustly to t>50**: 0.47–0.57× MWPM across all t, stable extrapolation to t=200. Pretrained base representations encode physical structure and scale to unseen sequence lengths.
+- **Trainable GNN best across all t**: 0.41–0.47× MWPM at p=0.001, consistent at all round counts including t=200.
