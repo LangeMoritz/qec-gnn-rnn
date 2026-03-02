@@ -47,7 +47,8 @@ def parse_args():
     p.add_argument("--n_gru",   type=int,   default=2)
     p.add_argument("--embed",   type=int,   nargs="+", default=[3, 64, 256],
                    help="GNN embedding layer sizes (first must be 3)")
-    p.add_argument("--wandb",   action="store_true")
+    p.add_argument("--wandb",         action="store_true")
+    p.add_argument("--wandb_project", type=str, default="GNN-RNN-BB-codes")
     p.add_argument("--no_prefetch", action="store_true")
     p.add_argument("--no_auto_batch", action="store_true")
     p.add_argument("--load",    type=str, default=None,
@@ -78,6 +79,7 @@ def main():
         hidden_size      = cli.hidden,
         n_gru_layers     = cli.n_gru,
         log_wandb        = cli.wandb,
+        wandb_project    = cli.wandb_project,
         prefetch         = not cli.no_prefetch,
         auto_batch_size  = not cli.no_auto_batch,
     )
