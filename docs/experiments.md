@@ -18,6 +18,7 @@
 | [10](#experiment-10-si1000-stratified-sampling--larger-gnn) | SI1000 Stratified Sampling + Larger GNN | `google-data` | 2026-02-26 | partially tested |
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
 | [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
+| [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
 
 ---
 
@@ -537,3 +538,53 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 - **Random GNN fails catastrophically at p=0.001, t=200** (28.3× MWPM): recurrent dynamics become unstable for long sequences at low error rates. At p=0.001, degradation begins at t=100 (0.74×); for p≥0.002 the random GNN stays below MWPM even at t=200 (0.62–0.85×). Root cause: without pretrained base GNN embeddings the model fails to generalise to sequence lengths beyond training (t=50), particularly at low p where the error signal is sparse.
 - **Frozen GNN generalises robustly to t>50**: 0.47–0.57× MWPM across all t, stable extrapolation to t=200. Pretrained base representations encode physical structure and scale to unseen sequence lengths.
 - **Trainable GNN best across all t**: 0.41–0.47× MWPM at p=0.001, consistent at all round counts including t=200.
+
+---
+
+## Experiment 13: Hierarchical: Adaptive LR (d=5) + First d=9 Run
+
+**Goal**: Two parallel objectives: (1) re-run the best Exp 12 configuration (trainable GNN, d=5) with the new per-parameter-group LR schedule to eliminate catastrophic forgetting spikes; (2) first d=9 hierarchical decoder using the Exp 12 trainable-GNN checkpoint as the d=5 base.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### New features since Exp 12
+
+- `MetaGRUDecoder.embed_chunks()` — CNN-only supernode embedding; enables stacking
+- `TwoLevelHierarchicalDataset` — d=9 → 4×4 nested patches (16 d=3 leaves)
+- Per-group LR in `train_hierarchical.py`: d=5 trainable → 2-group (base 1e-5, meta 1e-3); d=9 trainable → 3-group (d=3 1e-5, d=5 1e-4, d=9 1e-3)
+- Auto-detect base checkpoint type from `"meta_hidden"` key
+- `python -u` in all `.sh` scripts for live SLURM log output
+
+### Setup
+
+| Parameter | Run A (d=5 adaptive LR) | Run B (d=9 first run) |
+|-----------|------------------------|----------------------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` (Exp 12 best) |
+| Distance | 5 | 9 |
+| Rounds (t) | 50 | 50 |
+| dt | 2 | 2 |
+| p values | 0.001–0.005 (5 values) | 0.001–0.005 (5 values) |
+| Batch size | 2048 (auto-tuned) | 2048 (auto-tuned) |
+| Batches/epoch | 256 | 256 |
+| Epochs | 1000 | 1000 |
+| meta_hidden | 256 | 256 |
+| n_meta_layers | 4 | 4 |
+| GNN trainable | yes (2-group LR) | yes (3-group LR) |
+| GPU | A40 (Alvis) | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Run | Note |
+|-----------|-----|------|
+| 6020435 | A | `adaptive_lr` |
+| 6020436 | B | `d9_from_exp12` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 256 1000 adaptive_lr GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 2048 256 1000 d9_from_exp12 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base
+```
+
+### Results
+
+_(pending)_
