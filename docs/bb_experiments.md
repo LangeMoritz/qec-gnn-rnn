@@ -22,7 +22,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 ## Exp BB-1: GRU decoder, [[72,12,6]], baseline run
 
-**Status**: RUNNING — job 6018944 (job 6018898 crashed: missing B arg in find_optimal_bb_batch_size, fixed in db85691; job 6007375 crashed: missing --wandb_project arg in train_bb.py, fixed in 558aa74)
+**Status**: RUNNING — job 6019078 (job 6018944 crashed: decompose_errors=True in BP-OSD DEM, fixed in 7db7e1d; job 6018898 crashed: missing B arg in find_optimal_bb_batch_size, fixed in db85691; job 6007375 crashed: missing --wandb_project arg, fixed in 558aa74)
 
 **Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD-0.
 
