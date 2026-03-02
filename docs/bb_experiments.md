@@ -22,7 +22,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 ## Exp BB-1: GRU decoder, [[72,12,6]], baseline run
 
-**Status**: RUNNING — job 6007375
+**Status**: RUNNING — job 6018898 (job 6007375 crashed: missing --wandb_project arg in train_bb.py, fixed in 558aa74)
 
 **Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD-0.
 
