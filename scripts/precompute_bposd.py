@@ -73,8 +73,8 @@ def _dem_to_bp_matrices(dem):
     return H.tocsr(), L, probs
 
 
-def compute_bposd(code_size: int, t: int, p: float, max_shots: int = 50_000,
-                  target_rel_std: float = 0.01) -> dict:
+def compute_bposd(code_size: int, t: int, p: float, max_shots: int = 2_000_000,
+                  target_rel_std: float = 0.1) -> dict:
     from ldpc import BpOsdDecoder
 
     params = BB_CODE_PARAMS[code_size]
