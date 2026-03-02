@@ -17,7 +17,7 @@
 | [9](#experiment-9-multi-p-d3-stratified-sampling) | Multi-p d=3 with Stratified Sampling | `iterative-decoding` | 2026-02-26 | in progress |
 | [10](#experiment-10-si1000-stratified-sampling--larger-gnn) | SI1000 Stratified Sampling + Larger GNN | `google-data` | 2026-02-26 | partially tested |
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
-| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | running |
+| [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | training done, test pending |
 
 ---
 
@@ -506,4 +506,22 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 25
 
 ### Results
 
-_(pending)_
+**Training results** (avg over last 20 epochs, MWPM ≈ 94.86%, wandb IDs `zjc29y31` / `8jonoyqe` / `3o2nrnfj`):
+
+| Condition | wandb ID | Final acc | MWPM gap | First beats MWPM |
+|-----------|----------|-----------|----------|------------------|
+| Frozen GNN | `zjc29y31` | 96.01% | +1.15% | epoch 390 |
+| Random GNN | `3o2nrnfj` | 96.43% | +1.55% | epoch 214 |
+| Trainable GNN | `8jonoyqe` | 96.73% | +1.87% | epoch 166 |
+
+**Test results**: _(pending — job 6018895 for random\_gnn)_
+
+**Figure**: `results/exp12_training_curves.pdf`
+
+### Observations
+
+- **Trainable GNN is best overall**: highest final accuracy (+1.87% over MWPM) and fastest convergence (beats MWPM at epoch 166). Pretrained d=3 weights provide a useful initialisation; joint gradient flow fine-tunes both base and meta layers for d=5.
+- **Random GNN beats Frozen GNN** (96.43% vs. 96.01%, MWPM-crossing at epoch 214 vs. 390): freezing the pretrained base is actively harmful. Locked-in d=3 representations are suboptimal for d=5 patch processing; a freely trainable random-init GNN adapts without this constraint.
+- **Trainable GNN shows catastrophic forgetting spikes** in epochs 63–134 (accuracy drops up to 14.7% in a single epoch, e.g. 0.945→0.798 at epoch 63, then 1–3-epoch recovery). Mechanism: d=5 gradients propagating into the pretrained d=3 GNN weights occasionally land in a poor weight region, partially overwriting useful features. Does not occur in frozen (no updates) or random (no useful structure to destroy; max single-epoch drop 4.9%). Spikes cease after epoch ~200 once joint minimum is found (late-stage acc std 0.0008 vs. early 0.0507).
+- **Mitigation**: use separate per-parameter-group LRs (e.g. `1e-5` for base GNN, `1e-4` for meta layers) to allow joint optimisation without catastrophic forgetting.
+- **Recommendation**: use Trainable GNN as the default hierarchical configuration; drop the frozen-base design._
