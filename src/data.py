@@ -516,6 +516,107 @@ class HierarchicalDataset:
         return torch.zeros((2, 0), dtype=torch.long), torch.zeros(0, dtype=torch.float32)
 
 
+class TwoLevelHierarchicalDataset(HierarchicalDataset):
+    """Splits a d=9 circuit into 4 d=5 outer patches, each into 4 d=3 sub-patches.
+
+    generate_batch() returns patch_batches as list[4] of list[4] of 5-tuples,
+    ordered [TL, TR, BL, BR] at both levels.
+
+    The d=9 lattice is first split at (x_mid, y_mid) into 4 outer d=5 patches
+    (identical to HierarchicalDataset). Each outer patch's translated coordinates
+    are then split at their midpoint into 4 inner d=3 sub-patches.
+    """
+
+    def __init__(self, args: Args):
+        super().__init__(args)   # builds self._full (d=9), self.patch_indices, self._patch_coords, etc.
+        self._setup_sub_patches()
+
+    def _setup_sub_patches(self):
+        """For each of the 4 outer d=5 patches, build 4 inner d=3 sub-patches."""
+        self.sub_patch_local_indices = []   # [4][4] index arrays into outer patch columns
+        self.sub_patch_coords       = []    # [4][4] translated int64 coords
+        self.sub_patch_pos_idx      = []    # [4][4] 3-D pos_idx arrays
+        self.sub_patch_edge_weights = []    # [4][4] float32 weight matrices
+        self.sub_patch_local_pairs  = []    # [4][4] local-pairs caches (dicts)
+
+        for p in range(4):
+            outer_coords = self._patch_coords[p]   # [n_outer_det, 3] int64, origin-translated
+            ox, oy = outer_coords[:, 0], outer_coords[:, 1]
+            ox_mid = (int(ox.min()) + int(ox.max())) / 2
+            oy_mid = (int(oy.min()) + int(oy.max())) / 2
+
+            inner_masks = [
+                (ox <= ox_mid + 1) & (oy <= oy_mid + 1),  # TL
+                (ox >= ox_mid - 1) & (oy <= oy_mid + 1),  # TR
+                (ox <= ox_mid + 1) & (oy >= oy_mid - 1),  # BL
+                (ox >= ox_mid - 1) & (oy >= oy_mid - 1),  # BR
+            ]
+
+            local_idx_list, coords_list, pos_idx_list, ew_list, pairs_list = [], [], [], [], []
+            for mask in inner_masks:
+                inner_local_idx = np.where(mask)[0]
+                ic = outer_coords[inner_local_idx].copy()
+                ic[:, :2] -= ic[:, :2].min(axis=0)   # translate to origin
+                pos_idx, ew = self._build_edge_weights(ic)
+                local_idx_list.append(inner_local_idx)
+                coords_list.append(ic)
+                pos_idx_list.append(pos_idx)
+                ew_list.append(ew)
+                pairs_list.append({})
+
+            self.sub_patch_local_indices.append(local_idx_list)
+            self.sub_patch_coords.append(coords_list)
+            self.sub_patch_pos_idx.append(pos_idx_list)
+            self.sub_patch_edge_weights.append(ew_list)
+            self.sub_patch_local_pairs.append(pairs_list)
+
+    def generate_batch(self):
+        """Sample from the d=9 circuit and return 4×4 nested patch sub-batches.
+
+        Returns:
+            patch_batches: list[4] of list[4] of (x, edge_index, labels, label_map, edge_attr)
+                           outer order [TL, TR, BL, BR], same for inner
+            last_label:    [B, 1] float32 tensor
+            g_max:         number of time chunks per sample
+        """
+        full = self._full
+        n_p = len(full.samplers)
+        if n_p == 1:
+            syndromes, label_data = full._sample_n(0, full.batch_size)
+        else:
+            per_p = full.batch_size // n_p
+            remainder = full.batch_size - per_p * n_p
+            counts = [per_p + (1 if i < remainder else 0) for i in range(n_p)]
+            parts_s, parts_l = zip(*[full._sample_n(i, counts[i]) for i in range(n_p)])
+            syndromes = np.concatenate(parts_s)
+            label_data = np.concatenate(parts_l)
+        last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=full.device)
+        sampler_t = full._sampler_t[0]
+
+        patch_batches = []
+        for i_outer in range(4):
+            outer_syndromes = syndromes[:, self.patch_indices[i_outer]]  # [B, n_outer_det]
+            sub_patches = []
+            for i_inner in range(4):
+                inner_local_idx = self.sub_patch_local_indices[i_outer][i_inner]
+                inner_syndromes = outer_syndromes[:, inner_local_idx]    # [B, n_inner_det]
+                tup = self._build_patch_batch(
+                    inner_syndromes,
+                    self.sub_patch_coords[i_outer][i_inner],
+                    self.sub_patch_pos_idx[i_outer][i_inner],
+                    self.sub_patch_edge_weights[i_outer][i_inner],
+                    self.sub_patch_local_pairs[i_outer][i_inner],
+                    sampler_t,
+                )
+                sub_patches.append(tup)
+            patch_batches.append(sub_patches)
+
+        g_max = sampler_t - full.dt + 2
+        assert len(patch_batches) == 4 and len(patch_batches[0]) == 4, \
+            f"Expected 4×4 patch structure, got {len(patch_batches)}×{len(patch_batches[0])}"
+        return patch_batches, last_label, g_max
+
+
 class BatchPrefetcher:
     """Producer-consumer prefetcher with its own Dataset instance (thread safety).
 
@@ -571,6 +672,47 @@ class HierarchicalBatchPrefetcher:
     """
     def __init__(self, args: Args, queue_size: int = 2):
         self.dataset = HierarchicalDataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        self._stop.clear()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+class TwoLevelHierarchicalBatchPrefetcher:
+    """Like HierarchicalBatchPrefetcher but for TwoLevelHierarchicalDataset."""
+
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = TwoLevelHierarchicalDataset(args)
         self.queue: Queue = Queue(maxsize=queue_size)
         self._stop = Event()
         self._thread: Thread | None = None
@@ -695,22 +837,25 @@ def find_optimal_batch_size(args: Args, model, candidates=None):
     return best_bs
 
 
-def find_optimal_batch_size_hierarchical(args: Args, meta_model, candidates=None):
+def find_optimal_batch_size_hierarchical(args: Args, meta_model, candidates=None, DatasetCls=None):
     """Find training batch size with best throughput for the hierarchical model.
 
-    Tries candidates with a forward+backward pass on HierarchicalDataset.
+    Tries candidates with a forward+backward pass on DatasetCls (defaults to
+    HierarchicalDataset, pass TwoLevelHierarchicalDataset for d=9 training).
     Picks the batch size with highest samples/sec (bottleneck = model_time with prefetch).
     Scales args.n_batches inversely so total samples/epoch stays constant.
     """
     import torch.nn as nn
 
+    if DatasetCls is None:
+        DatasetCls = HierarchicalDataset
     if candidates is None:
         candidates = [512, 1024, 2048, 4096, 8192, 16384]
 
     original_bs = args.batch_size
     results = []
     print(f"\n{'='*60}")
-    print(f"Auto batch size tuning (hierarchical, {args.device})")
+    print(f"Auto batch size tuning ({DatasetCls.__name__}, {args.device})")
     print(f"{'='*60}")
     print(f"{'batch_size':>12} {'data_time':>10} {'model_time':>11} {'throughput':>12} {'status':>8}")
     print(f"{'-'*60}")
@@ -723,7 +868,7 @@ def find_optimal_batch_size_hierarchical(args: Args, meta_model, candidates=None
         trial_args.error_rate = probe_p
         trial_args.error_rates = None
         try:
-            ds = HierarchicalDataset(trial_args)
+            ds = DatasetCls(trial_args)
             t0 = time.perf_counter()
             patch_batches, last_label, g_max = ds.generate_batch()
             data_time = time.perf_counter() - t0

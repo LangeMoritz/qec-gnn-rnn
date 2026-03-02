@@ -20,18 +20,25 @@ from copy import deepcopy
 
 from args import Args
 from gru_decoder import GRUDecoder
-from data import HierarchicalDataset, HierarchicalBatchPrefetcher, find_optimal_batch_size_hierarchical
+from data import (HierarchicalDataset, HierarchicalBatchPrefetcher,
+                  TwoLevelHierarchicalDataset, TwoLevelHierarchicalBatchPrefetcher,
+                  find_optimal_batch_size_hierarchical)
 from hierarchical_decoder import MetaGRUDecoder
 from utils import TrainingLogger
 
 
 
-def find_max_inference_batch_size_hierarchical(meta_model, args, t, error_rate=None):
+def find_max_inference_batch_size_hierarchical(meta_model, args, t, error_rate=None, DatasetCls=None):
     """Find largest batch size that fits in GPU memory for inference at given t.
 
     Halves from args.batch_size until a working value is found, then doubles
     to find the true maximum.
+
+    DatasetCls defaults to HierarchicalDataset; pass TwoLevelHierarchicalDataset
+    for d=9 two-level models.
     """
+    if DatasetCls is None:
+        DatasetCls = HierarchicalDataset
     raw = getattr(meta_model, '_orig_mod', meta_model)
     probe_p = error_rate if error_rate is not None else (
         max(args.error_rates) if args.error_rates else args.error_rate
@@ -46,7 +53,7 @@ def find_max_inference_batch_size_hierarchical(meta_model, args, t, error_rate=N
             trial_args.error_rate = probe_p
             trial_args.error_rates = None
             trial_args.t = t
-            ds = HierarchicalDataset(trial_args)
+            ds = DatasetCls(trial_args)
             patch_batches, last_label, g_max = ds.generate_batch()
             if args.device.type == 'cuda':
                 torch.cuda.synchronize()
@@ -112,29 +119,62 @@ if __name__ == "__main__":
                         help='Max shots per (p, t) for adaptive testing')
     cli = parser.parse_args()
 
-    # ── Load frozen base model ──
+    # ── Load base model (auto-detect type) ──
     ckpt = torch.load(f"./models/{cli.base_model}.pt", weights_only=False)
-    base_args_dict = ckpt["args"]
     device = torch.device(
         "mps" if torch.backends.mps.is_available() else
         "cuda" if torch.cuda.is_available() else "cpu"
     )
-    base_args = Args(
-        distance=base_args_dict["distance"],
-        error_rate=base_args_dict["error_rate"],
-        t=cli.t,
-        dt=cli.dt,
-        embedding_features=base_args_dict["embedding_features"],
-        hidden_size=base_args_dict["hidden_size"],
-        n_gru_layers=base_args_dict["n_gru_layers"],
-    )
-    base_args.device = device
-    base_model = GRUDecoder(base_args).to(device)
-    if cli.random_base:
-        print(f"Using randomly-initialised base GNN (architecture from: {cli.base_model})")
-    else:
+
+    if "meta_hidden" in ckpt:
+        # Checkpoint is a MetaGRUDecoder (d=5 level) — build two-level d=9 model
+        print(f"Detected MetaGRUDecoder base checkpoint: {cli.base_model}")
+        d3_name = ckpt["base_model_name"]
+        d3_ckpt = torch.load(f"./models/{d3_name}.pt", weights_only=False)
+        d3_args_dict = d3_ckpt["args"]
+        d3_args = Args(
+            distance=d3_args_dict["distance"],
+            error_rate=d3_args_dict["error_rate"],
+            t=cli.t,
+            dt=cli.dt,
+            embedding_features=d3_args_dict["embedding_features"],
+            hidden_size=d3_args_dict["hidden_size"],
+            n_gru_layers=d3_args_dict["n_gru_layers"],
+        )
+        d3_args.device = device
+        d3_model = GRUDecoder(d3_args).to(device)
+        d3_model.load_state_dict(d3_ckpt["state_dict"])
+        base_model = MetaGRUDecoder(
+            d3_model,
+            meta_hidden=ckpt["meta_hidden"],
+            n_meta_layers=ckpt["n_meta_layers"],
+            trainable_base=False,   # trainability at d=5 level controlled below
+            warm_start_rnn=False,   # already trained, don't overwrite
+        ).to(device)
         base_model.load_state_dict(ckpt["state_dict"])
-        print(f"Loaded base model: {cli.base_model} (d={base_args_dict['distance']})")
+        print(f"Loaded d=5 MetaGRUDecoder: {cli.base_model} (d=3 base: {d3_name})")
+        base_is_meta = True
+    else:
+        # Checkpoint is a GRUDecoder (d=3 level)
+        base_args_dict = ckpt["args"]
+        base_args = Args(
+            distance=base_args_dict["distance"],
+            error_rate=base_args_dict["error_rate"],
+            t=cli.t,
+            dt=cli.dt,
+            embedding_features=base_args_dict["embedding_features"],
+            hidden_size=base_args_dict["hidden_size"],
+            n_gru_layers=base_args_dict["n_gru_layers"],
+        )
+        base_args.device = device
+        base_model = GRUDecoder(base_args).to(device)
+        if cli.random_base:
+            print(f"Using randomly-initialised base GNN (architecture from: {cli.base_model})")
+        else:
+            base_model.load_state_dict(ckpt["state_dict"])
+            print(f"Loaded base GRUDecoder: {cli.base_model} (d={base_args_dict['distance']})")
+        base_is_meta = False
+
     base_model.eval()
 
     # ── Args for target d=2k-1 circuit ──
@@ -150,22 +190,38 @@ if __name__ == "__main__":
     )
     args.device = device
 
+    # Select dataset / prefetcher class based on base model type
+    if base_is_meta:
+        DatasetCls    = TwoLevelHierarchicalDataset
+        PrefetcherCls = TwoLevelHierarchicalBatchPrefetcher
+    else:
+        DatasetCls    = HierarchicalDataset
+        PrefetcherCls = HierarchicalBatchPrefetcher
+
     # Print patch geometry info
-    _ds = HierarchicalDataset(args)
-    print(f"HierarchicalDataset: d={cli.d}, g_max={_ds._full._sampler_t[0] - cli.dt + 2}")
-    for p in range(4):
-        print(f"  {['TL','TR','BL','BR'][p]}: {len(_ds.patch_indices[p])} detectors")
+    _ds = DatasetCls(args)
+    print(f"{DatasetCls.__name__}: d={cli.d}, g_max={_ds._full._sampler_t[0] - cli.dt + 2}")
+    if base_is_meta:
+        for i_outer in range(4):
+            n_outer = len(_ds.patch_indices[i_outer])
+            print(f"  outer {['TL','TR','BL','BR'][i_outer]}: {n_outer} detectors")
+            for i_inner in range(4):
+                n_inner = len(_ds.sub_patch_local_indices[i_outer][i_inner])
+                print(f"    inner {['TL','TR','BL','BR'][i_inner]}: {n_inner} sub-detectors")
+    else:
+        for p in range(4):
+            print(f"  {['TL','TR','BL','BR'][p]}: {len(_ds.patch_indices[p])} detectors")
     del _ds
 
     # ── Meta-model ──
     meta_model = MetaGRUDecoder(
         base_model, cli.meta_hidden, cli.n_meta_layers,
         trainable_base=cli.trainable_base,
-        warm_start_rnn=not cli.random_base,
+        warm_start_rnn=not cli.random_base and not base_is_meta,
     ).to(device)
     n_trainable = sum(p.numel() for p in meta_model.parameters() if p.requires_grad)
-    n_frozen = sum(p.numel() for p in meta_model.base_model.parameters())
-    print(f"MetaGRUDecoder: {n_trainable:,} trainable params, {n_frozen:,} frozen base params")
+    n_frozen = sum(p.numel() for p in meta_model.parameters() if not p.requires_grad)
+    print(f"MetaGRUDecoder: {n_trainable:,} trainable params, {n_frozen:,} frozen params")
 
     if cli.load_path:
         meta_ckpt = torch.load(f"./models/{cli.load_path}.pt", weights_only=False, map_location=device)
@@ -198,7 +254,7 @@ if __name__ == "__main__":
 
     # ── Auto batch size (before torch.compile) ──
     if cli.auto_batch_size and device.type == 'cuda':
-        optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model)
+        optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model, DatasetCls=DatasetCls)
         args.n_batches = max(1, args.n_batches * args.batch_size // optimal_bs)
         args.batch_size = optimal_bs
         cli.batch_size = optimal_bs
@@ -210,9 +266,35 @@ if __name__ == "__main__":
                 allow_val_change=True,
             )
 
-    optim = torch.optim.Adam(
-        [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
-    )
+    # ── Optimizer with per-group learning rates ──
+    if base_is_meta and cli.trainable_base:
+        # Three LR groups: d=3 GNN (slowest), d=5 meta layers (medium), d=9 meta layers (fastest)
+        d3_params = list(meta_model.base_model.base_model.parameters())
+        d3_ids    = {id(p) for p in d3_params}
+        d5_all_ids = {id(p) for p in meta_model.base_model.parameters()}
+        d5_only_params = [p for p in meta_model.base_model.parameters() if id(p) not in d3_ids]
+        d9_params = [p for p in meta_model.parameters() if id(p) not in d5_all_ids]
+        optim = torch.optim.Adam([
+            {"params": d3_params,      "lr": 1e-5},
+            {"params": d5_only_params, "lr": 1e-4},
+            {"params": d9_params,      "lr": 1e-3},
+        ])
+        print(f"Optimizer: 3-group LR (d=3: 1e-5, d=5: 1e-4, d=9: 1e-3)")
+    elif cli.trainable_base:
+        # Two LR groups: base GNN (slow), meta layers (fast)
+        base_params    = list(meta_model.base_model.parameters())
+        base_ids       = {id(p) for p in base_params}
+        meta_only_params = [p for p in meta_model.parameters() if id(p) not in base_ids]
+        optim = torch.optim.Adam([
+            {"params": base_params,      "lr": 1e-5},
+            {"params": meta_only_params, "lr": 1e-3},
+        ])
+        print(f"Optimizer: 2-group LR (base: 1e-5, meta: 1e-3)")
+    else:
+        optim = torch.optim.Adam(
+            [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
+        )
+        print(f"Optimizer: single LR 1e-3 (meta layers only)")
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
     )
@@ -226,7 +308,7 @@ if __name__ == "__main__":
         mwpm_args = deepcopy(args)
         mwpm_args.error_rates = None
         mwpm_args.error_rate = er
-        mwpm_ds = HierarchicalDataset(mwpm_args)
+        mwpm_ds = DatasetCls(mwpm_args)
         dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
         matcher = pymatching.Matching.from_detector_error_model(dem)
         total_correct = total_shots = 0
@@ -250,7 +332,7 @@ if __name__ == "__main__":
     best_accuracy = 0.0
     history = []
 
-    prefetcher = HierarchicalBatchPrefetcher(args, queue_size=2)
+    prefetcher = PrefetcherCls(args, queue_size=2)
 
     for epoch in range(1, cli.n_epochs + 1):
         logger.on_epoch_begin(epoch)
@@ -329,7 +411,9 @@ if __name__ == "__main__":
             for t in sorted(cli.test_rounds):
                 # Find largest safe batch size for this (p, t)
                 if device.type == 'cuda':
-                    test_bs = find_max_inference_batch_size_hierarchical(raw_meta, args, t, error_rate=p)
+                    test_bs = find_max_inference_batch_size_hierarchical(
+                        raw_meta, args, t, error_rate=p, DatasetCls=DatasetCls
+                    )
                     torch.cuda.empty_cache()
                 else:
                     test_bs = args.batch_size
@@ -340,7 +424,7 @@ if __name__ == "__main__":
                 test_args.error_rate = p
                 test_args.error_rates = None
                 test_args.t = t
-                ds = HierarchicalDataset(test_args)
+                ds = DatasetCls(test_args)
 
                 # MWPM on full d circuit
                 dem = ds._full.circuits[0].detector_error_model(decompose_errors=True)
