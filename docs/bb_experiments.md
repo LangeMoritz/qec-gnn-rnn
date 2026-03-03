@@ -65,7 +65,7 @@ sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302
 
 ## Exp BB-2: Larger model, [[72,12,6]]
 
-**Status**: RUNNING — job TBD
+**Status**: RUNNING — job 6031466
 
 **Goal**: Close the 290× gap to BP-OSD-0 by increasing model capacity.
 BB-1 showed the 256-hidden model saturates around 98.3% (P_L=1.73%) despite 6500 epochs.
