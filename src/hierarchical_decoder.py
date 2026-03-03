@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from gru_decoder import GRUDecoder
+from utils import group
 
 try:
     profile
@@ -83,22 +84,14 @@ class MetaGRUDecoder(nn.Module):
                 dst[key].copy_(src[key])
         self.meta_rnn.load_state_dict(dst)
 
-    @profile
     def _embed_patch(self, patch_data, B: int, g_max: int):
-        """Embed one spatial patch using the base model.
+        """Embed one spatial patch using a MetaGRUDecoder base model.
 
-        When base_model is MetaGRUDecoder:  patch_data is list[4] of sub-patch tuples.
-        When base_model is GRUDecoder:      patch_data is (x, edge_index, labels, label_map, edge_attr).
+        Used only when base_model is MetaGRUDecoder (d=9 case).
+        patch_data is list[4] of sub-patch 5-tuples.
         Returns [B, g_max, embed_dim].
         """
-        if isinstance(self.base_model, MetaGRUDecoder):
-            # patch_data is a list of 4 d=3 sub-patch 5-tuples
-            return self.base_model.embed_chunks(patch_data, B, g_max)
-        else:
-            x, edge_index, labels, label_map, edge_attr = patch_data
-            return self.base_model.embed_chunks(
-                x, edge_index, edge_attr, labels, label_map, B, g_max
-            )
+        return self.base_model.embed_chunks(patch_data, B, g_max)
 
     @profile
     def embed_chunks(self, patch_batches: list, B: int, g_max: int):
@@ -108,11 +101,14 @@ class MetaGRUDecoder(nn.Module):
         a d=5 MetaGRUDecoder as its base_model.
 
         patch_batches: list of 4 patch_data items (each processed by _embed_patch).
+        When base_model is GRUDecoder, all 4 patches are batched into a single GNN
+        forward pass for efficiency. When base_model is MetaGRUDecoder, patches are
+        processed sequentially (each internally batches its own 4 sub-patches).
         """
-        patch_embs = []
-        for patch_data in patch_batches:
-            emb = self._embed_patch(patch_data, B, g_max)
-            patch_embs.append(emb)  # [B, g_max, embed_dim]
+        if isinstance(self.base_model, GRUDecoder):
+            patch_embs = self._embed_patches_batched(patch_batches, B, g_max)
+        else:
+            patch_embs = [self._embed_patch(pd, B, g_max) for pd in patch_batches]
 
         embed_dim = patch_embs[0].shape[-1]
         stacked = torch.stack(patch_embs, dim=2)                        # [B, g_max, 4, embed_dim]
@@ -121,6 +117,46 @@ class MetaGRUDecoder(nn.Module):
 
         meta_emb = self.spatial_conv(spatial).squeeze(-1).squeeze(-1)   # [B*g_max, meta_hidden]
         return meta_emb.reshape(B, g_max, -1)                           # [B, g_max, meta_hidden]
+
+    def _embed_patches_batched(self, patch_batches: list, B: int, g_max: int):
+        """Batch all 4 GRUDecoder patches into a single GNN forward pass.
+
+        Concatenates node features, offsets edge_index and batch_labels, runs
+        base_model.embed() once, then splits the output and applies group() per patch.
+        Replaces 4 sequential GPU dispatches with 1.
+        """
+        xs, eis, eas, bls, lms = [], [], [], [], []
+        node_offset = 0
+        chunk_offset = 0
+        n_chunks_list = []
+
+        for x, edge_index, labels, label_map, edge_attr in patch_batches:
+            n_nodes = x.shape[0]
+            n_chunks = int(labels.max().item()) + 1 if n_nodes > 0 else 0
+            xs.append(x)
+            eas.append(edge_attr)
+            eis.append(edge_index + node_offset)
+            bls.append(labels + chunk_offset)
+            lms.append(label_map)
+            n_chunks_list.append(n_chunks)
+            node_offset += n_nodes
+            chunk_offset += n_chunks
+
+        x_cat  = torch.cat(xs,  dim=0)   # [total_nodes, feat]
+        ei_cat = torch.cat(eis, dim=1)   # [2, total_edges]
+        ea_cat = torch.cat(eas, dim=0)   # [total_edges, edge_feat]
+        bl_cat = torch.cat(bls, dim=0)   # [total_nodes]
+
+        bulk_emb = self.base_model.embed(x_cat, ei_cat, ea_cat, bl_cat)  # [total_chunks, embed_dim]
+
+        patch_embs = []
+        chunk_start = 0
+        for n_chunks, lm in zip(n_chunks_list, lms):
+            patch_bulk = bulk_emb[chunk_start : chunk_start + n_chunks]
+            patch_embs.append(group(patch_bulk, lm, B, g_max, self.base_model.empty_embedding))
+            chunk_start += n_chunks
+
+        return patch_embs
 
     @profile
     def forward(self, patch_batches: list, B: int, g_max: int):
