@@ -625,8 +625,8 @@ _(pending — jobs 6020435, 6020436)_
 
 | SLURM job | Run | Note |
 |-----------|-----|------|
-| TBD | A | `trainable_lr1e-4` |
-| TBD | B | `trainable_lr1e-4` |
+| 6032067 | A (d=5) | `trainable_lr1e-4` |
+| 6032068 | B (d=9) | `trainable_lr1e-4` |
 
 ### Commands
 
