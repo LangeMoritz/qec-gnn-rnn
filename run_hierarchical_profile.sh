@@ -16,7 +16,7 @@ pip install -q line_profiler
 
 LPROF_OUT="logs_alvis/profile_${SLURM_JOB_ID}.lprof"
 
-kernprof -l -o "$LPROF_OUT" scripts/train_hierarchical.py \
+kernprof -l -o "$LPROF_OUT" scripts/train_hierarchical.py -- \
     --base_model "$1" \
     --d "$2" \
     --p "$3" \
