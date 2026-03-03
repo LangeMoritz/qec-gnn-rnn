@@ -649,6 +649,44 @@ x,y ∈ {0,2,4,6} after renorm; 240/240 d=5 detectors covered.
 
 ---
 
+## Training Performance & Optimisations
+
+### Patch-batching in `embed_chunks` (2026-03-03)
+
+**Profiling setup**: `kernprof` (line_profiler) on a 2-epoch d=5 run, batch_size=8192, n_batches=4.
+
+**Bottleneck breakdown (before optimisation):**
+
+| Function | Time | % of forward |
+|----------|------|--------------|
+| `MetaGRUDecoder.embed_chunks` | 505 ms | 81% |
+| — `_embed_patch` loop (4× sequential) | 293 ms | 47% |
+| — `spatial_conv` (2×2 CNN) | 197 ms | 32% |
+| `meta_rnn` (GRU) | 88 ms | 14% |
+| `meta_decoder` | 28 ms | 5% |
+
+Inside `GRUDecoder.embed` (called 4× per forward for d=5, 16× for d=9):
+- GNN layers: 118 ms (46%), `global_mean_pool`: 140 ms (54%)
+
+**Fix — `_embed_patches_batched`**: concatenate all 4 patches' graph data (offset `edge_index` and `batch_labels`), run a single GNN forward pass, split the output and apply `group()` per patch. Replaces 4 GPU dispatches with 1.
+
+- **d=5**: 4 → 1 GNN call per forward pass.
+- **d=9**: 4 sequential `d5.embed_chunks` calls, each internally batching 4 d=3 sub-patches → 16 → 4 GNN calls. Batching all 16 at once was tried but hurt performance: 16× larger tensors caused GPU cache pressure that halved the effective batch_size, reducing throughput 2.4×.
+
+**Benchmark result (d=9, all 5.4M params trainable, 499,712 samples/epoch):**
+
+| | Before | After |
+|-|--------|-------|
+| GNN calls/forward | 16 sequential | 4 (×4 batched each) |
+| Auto-tuned batch_size | 4096 | 8192 |
+| model_time/epoch | 104.8 s | 65.9 s |
+| Throughput | 5,003 samples/s | 7,955 samples/s |
+| **Speedup** | — | **1.59×** |
+
+After the fix, `spatial_conv` becomes the dominant cost (~48% of `embed_chunks`).
+
+---
+
 ## Implementation Status
 
 | Component | Status | File |

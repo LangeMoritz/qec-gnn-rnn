@@ -104,6 +104,8 @@ if __name__ == "__main__":
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--trainable_base', action='store_true',
                         help='Allow base GNN weights to be updated during training')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help='Initial learning rate for Adam optimizer (default: 1e-3)')
     parser.add_argument('--random_base', action='store_true',
                         help='Use randomly-initialised base GNN (skip loading checkpoint weights)')
     parser.add_argument('--load_path', type=str, default=None,
@@ -268,9 +270,9 @@ if __name__ == "__main__":
 
     # ── Optimizer ──
     optim = torch.optim.Adam(
-        [p for p in meta_model.parameters() if p.requires_grad], lr=1e-3
+        [p for p in meta_model.parameters() if p.requires_grad], lr=cli.lr
     )
-    print(f"Optimizer: single LR 1e-3 ({n_trainable:,} trainable params)")
+    print(f"Optimizer: single LR {cli.lr} ({n_trainable:,} trainable params)")
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
     )

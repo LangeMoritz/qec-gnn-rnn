@@ -10,8 +10,8 @@ module load PyTorch-Geometric/2.5.0-foss-2023a-PyTorch-2.1.2-CUDA-12.1.1
 source .venv/bin/activate
 
 # auto_batch_size is on by default; pass --no_auto_batch_size explicitly if needed
-# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]  [trainable_base]  [random_base]  [load_path]
-# sbatch run_hierarchical.sh  d3_p0.001_t50_dt2_260224_5979931  5  0.001  50  2  2048  256  200  hier_multip  GNN-RNN-hierarchical  "0.001 0.002 0.003 0.004 0.005"  test
+# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]  [trainable_base]  [random_base]  [load_path]  [lr]
+# sbatch run_hierarchical.sh  d3_p0.001_t50_dt2_260224_5979931  5  0.001  50  2  2048  244  1000  ""  GNN-iterative-decoding  "0.001 0.002 0.003 0.004 0.005"  ""  trainable_base  ""  ""  1e-4
 
 python -u scripts/train_hierarchical.py \
     --base_model "$1" \
@@ -28,4 +28,5 @@ python -u scripts/train_hierarchical.py \
     $([[ "${12}" == "test" ]] && echo "--test") \
     $([[ "${13}" == "trainable_base" ]] && echo "--trainable_base") \
     $([[ "${14}" == "random_base" ]] && echo "--random_base") \
-    ${15:+--load_path "${15}"}
+    ${15:+--load_path "${15}"} \
+    ${16:+--lr "${16}"}
