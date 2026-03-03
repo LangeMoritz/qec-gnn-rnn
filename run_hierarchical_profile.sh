@@ -8,6 +8,7 @@
 module purge
 module load PyTorch-Geometric/2.5.0-foss-2023a-PyTorch-2.1.2-CUDA-12.1.1
 source .venv/bin/activate
+pip install -q line_profiler
 
 # Same args as run_hierarchical.sh — runs under kernprof for line-by-line timing.
 # Profile output saved to logs_alvis/profile_<JOBID>.lprof
