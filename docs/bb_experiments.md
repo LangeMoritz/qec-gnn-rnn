@@ -22,7 +22,7 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 
 ## Exp BB-1: GRU decoder, [[72,12,6]], baseline run
 
-**Status**: RUNNING — job 6021780 (+5000 epochs, load bb72_t6_p0_001_260302_130101); job 6021119 (+1000 epochs, load bb72_t6_p0_001_260302_121943); job 6020878 ran 500 epochs; earlier crashes: 6019078 killed for GPU idle (BP-OSD at startup, fixed), 6018944 decompose_errors, 6018898 missing B arg, 6007375 missing --wandb_project
+**Status**: DONE — final model: `bb72_t6_p0_001_260302_153110` (wandb: `4vgvha29`)
 
 **Goal**: Establish GRU baseline on [[72,12,6]] and compare to BP-OSD-0.
 
@@ -32,31 +32,64 @@ See `src/bb_codes/training_72_12_6.pdf` for the training curve.
 - t = 6 (= code distance), g_max = 7
 - p = 0.001
 - embedding_features = [3, 64, 256], hidden_size = 256, n_gru_layers = 2
-- batch_size = 2048 (auto-tuned), n_batches = 256 (~524K samples/epoch), n_epochs = 500, lr = 1e-3
+- batch_size = 2048 (auto-tuned), n_batches = 256 (~524K samples/epoch), lr = 1e-3
+- Total training: 500 + 1000 + 5000 = 6500 epochs across 3 jobs
 - wandb project: `GNN-RNN-BB-codes`
+
+**Results** (all-k=12-correct accuracy):
+| | Accuracy | P_L |
+|---|---|---|
+| NN (epoch 6500) | 98.27% | 1.73% |
+| BP-OSD-0 | 99.994% | 0.006% |
+
+Gap: NN is ~290× worse than BP-OSD-0 in P_L.
+
+**Trajectory**:
+- epoch 0: 27.4% → epoch 500: 87.7% → epoch 1500: 95.9% → epoch 6500: 98.3%
+- LR hit min_lr=0.0001 after ~44 epochs; flat for entire 6500 epochs
+- Still slowly improving but rate halving per doubling of epochs — cannot close gap by training alone
 
 **Changes vs planned**:
 - batch_size raised from 512 → 2048 to match surface code samples/epoch
 - BP-OSD-0 baseline computed once before training, logged as constant reference in wandb
 - `forward()` now handles trivial shots (empty graphs) by hard-coding logit=0
 
-**Expected improvement over old approach**:
-- GRU should capture temporal error propagation
-- Per-round sparse graphs (~5–10 active nodes vs 432) are much more efficient
-- k-head decoder has separate weights per logical observable
-
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes                                           # initial 500 epochs
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_121943             # +1000 epochs
-sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_130101             # +5000 epochs (job 6021780)
+sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes                                           # job 6020878
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_121943             # job 6021119
+sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302_130101             # job 6021780
 ```
 
 ---
 
-## Exp BB-2: Variable t training
+## Exp BB-2: Larger model, [[72,12,6]]
 
-**Status**: PLANNED (after BB-1)
+**Status**: RUNNING — job TBD
+
+**Goal**: Close the 290× gap to BP-OSD-0 by increasing model capacity.
+BB-1 showed the 256-hidden model saturates around 98.3% (P_L=1.73%) despite 6500 epochs.
+Hypothesis: model is capacity-limited; larger GNN embedding + GRU hidden size will extract more
+information from the syndrome graph per round.
+
+**Setup**:
+- Same code/t/p as BB-1: [[72, 12, 6]], t=6, p=0.001
+- embedding_features = [3, 64, 128, 256, 512, 1024] (6-layer GNN vs 3-layer)
+- hidden_size = 1024 (4× larger GRU)
+- n_gru_layers = 2, lr = 1e-3, n_epochs = 1000 (fresh start, no load)
+- batch_size = auto-tuned, n_batches = 256
+- wandb project: `GNN-RNN-BB-codes`
+
+**Commands**:
+```bash
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"
+```
+
+---
+
+## Exp BB-3: Variable t training
+
+**Status**: PLANNED (after BB-2)
 
 **Goal**: Test whether training on multiple t values (t ∈ {6, 12, 18}) improves
 generalization to longer sequences (analogous to surface code multi-t training).
@@ -65,9 +98,9 @@ generalization to longer sequences (analogous to surface code multi-t training).
 
 ---
 
-## Exp BB-3: Larger code [[144,12,12]]
+## Exp BB-4: Larger code [[144,12,12]]
 
-**Status**: PLANNED (after BB-1)
+**Status**: PLANNED (after BB-2)
 
 **Goal**: Scale to the flagship [[144, 12, 12]] code.
 - t = 12, g_max = 13
