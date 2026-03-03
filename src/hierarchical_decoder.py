@@ -107,6 +107,8 @@ class MetaGRUDecoder(nn.Module):
         """
         if isinstance(self.base_model, GRUDecoder):
             patch_embs = self._embed_patches_batched(patch_batches, B, g_max)
+        elif isinstance(self.base_model, MetaGRUDecoder) and isinstance(self.base_model.base_model, GRUDecoder):
+            patch_embs = self._embed_patches_batched_two_level(patch_batches, B, g_max)
         else:
             patch_embs = [self._embed_patch(pd, B, g_max) for pd in patch_batches]
 
@@ -157,6 +159,64 @@ class MetaGRUDecoder(nn.Module):
             chunk_start += n_chunks
 
         return patch_embs
+
+    def _embed_patches_batched_two_level(self, patch_batches: list, B: int, g_max: int):
+        """Batch all 16 d=3 sub-patches (4 meta-patches × 4 sub-patches) into one GNN call.
+
+        Used when base_model is MetaGRUDecoder with a GRUDecoder base (d=9 case).
+        Replaces 4 sequential d=5.embed_chunks calls with a single d=3 GNN pass,
+        then applies the d=5 spatial_conv to each group of 4 sub-patch embeddings.
+        """
+        d5_meta = self.base_model
+        d3_base = d5_meta.base_model  # GRUDecoder
+
+        # Flatten all 16 sub-patches: [meta0_sub0, meta0_sub1, ..., meta3_sub3]
+        all_sub_patches = [sub for meta_patch in patch_batches for sub in meta_patch]
+
+        xs, eis, eas, bls, lms = [], [], [], [], []
+        node_offset = 0
+        chunk_offset = 0
+        n_chunks_list = []
+
+        for x, edge_index, labels, label_map, edge_attr in all_sub_patches:
+            n_nodes = x.shape[0]
+            n_chunks = int(labels.max().item()) + 1 if n_nodes > 0 else 0
+            xs.append(x)
+            eas.append(edge_attr)
+            eis.append(edge_index + node_offset)
+            bls.append(labels + chunk_offset)
+            lms.append(label_map)
+            n_chunks_list.append(n_chunks)
+            node_offset += n_nodes
+            chunk_offset += n_chunks
+
+        x_cat  = torch.cat(xs,  dim=0)
+        ei_cat = torch.cat(eis, dim=1)
+        ea_cat = torch.cat(eas, dim=0)
+        bl_cat = torch.cat(bls, dim=0)
+
+        bulk_emb = d3_base.embed(x_cat, ei_cat, ea_cat, bl_cat)  # [total_chunks, d3_embed_dim]
+
+        # Reconstruct 16 sub-patch embeddings [B, g_max, d3_embed_dim]
+        sub_embs = []
+        chunk_start = 0
+        for n_chunks, lm in zip(n_chunks_list, lms):
+            patch_bulk = bulk_emb[chunk_start : chunk_start + n_chunks]
+            sub_embs.append(group(patch_bulk, lm, B, g_max, d3_base.empty_embedding))
+            chunk_start += n_chunks
+
+        # Apply d=5 spatial_conv to each group of 4 sub-patches → 4 meta-patch embeddings
+        d3_embed_dim = sub_embs[0].shape[-1]
+        meta_patch_embs = []
+        for i in range(4):
+            sub4 = sub_embs[i * 4 : (i + 1) * 4]
+            stacked = torch.stack(sub4, dim=2)                           # [B, g_max, 4, d3_embed_dim]
+            spatial  = stacked.reshape(B * g_max, 4, d3_embed_dim).permute(0, 2, 1)
+            spatial  = spatial.reshape(B * g_max, d3_embed_dim, 2, 2)
+            emb = d5_meta.spatial_conv(spatial).squeeze(-1).squeeze(-1)  # [B*g_max, d5_meta_hidden]
+            meta_patch_embs.append(emb.reshape(B, g_max, -1))
+
+        return meta_patch_embs
 
     @profile
     def forward(self, patch_batches: list, B: int, g_max: int):
