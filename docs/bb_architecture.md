@@ -146,27 +146,27 @@ where P_L is the total logical failure probability over t syndrome rounds.
 
 **IBM paper (2308.07915) Fig. 2a** — per-cycle p_L, multiple BB codes, BP decoder:
 
-![IBM Fig. 2a](../results/ref_ibm_fig2a_bb_codes.png)
+![IBM Fig. 2a](../results_bb/ref_ibm_fig2a_bb_codes.png)
 
 **LSD paper Fig. 6** — per-cycle logical Z error rate, multiple BB codes, BP+LSD:
 
-![LSD Fig. 6](../results/ref_lsd_fig6_bb_codes.png)
+![LSD Fig. 6](../results_bb/ref_lsd_fig6_bb_codes.png)
 
 ### Our plots (generated from `results/plot_lsd_mu.py`)
 
 **[[72,12,6]] — all LSD orders μ, log-log, per-cycle** (cf. IBM Fig. 2a):
 
-![lsd_mu_72_12_6_loglog](../results/lsd_mu_72_12_6_loglog.pdf)
+![lsd_mu_72_12_6_loglog](../results_bb/lsd_mu_72_12_6_loglog.pdf)
 
 **Multi-code comparison at μ=0, log-log, per-cycle** (cf. LSD Fig. 6):
 
-![lsd_mu_multicode_loglog](../results/lsd_mu_multicode_loglog.pdf)
+![lsd_mu_multicode_loglog](../results_bb/lsd_mu_multicode_loglog.pdf)
 
 | File | Content |
 |------|---------|
-| `results/lsd_mu_72_12_6.pdf` | Linear-log: [[72,12,6]] all μ, P_L total |
-| `results/lsd_mu_72_12_6_loglog.pdf` | Log-log: [[72,12,6]] all μ, per-cycle p_L |
-| `results/lsd_mu_multicode_loglog.pdf` | Log-log: [[72,12,6/108,8,10/144,12,12]] at μ=0, per-cycle p_L |
+| `results_bb/lsd_mu_72_12_6.pdf` | Linear-log: [[72,12,6]] all μ, P_L total |
+| `results_bb/lsd_mu_72_12_6_loglog.pdf` | Log-log: [[72,12,6]] all μ, per-cycle p_L |
+| `results_bb/lsd_mu_multicode_loglog.pdf` | Log-log: [[72,12,6/108,8,10/144,12,12]] at μ=0, per-cycle p_L |
 
 ### Key numbers at p = 0.001, μ = 0
 

@@ -12,11 +12,14 @@ Outputs (saved in results/):
                                 (cf. IBM Fig. 2a and LSD-paper Fig. 6)
 """
 
+import os
 import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import scienceplots
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 plt.style.use('science')
 plt.rcParams['figure.dpi'] = 300
@@ -34,7 +37,7 @@ def per_cycle_std(p_l, std, t):
 
 
 # ── Load ────────────────────────────────────────────────────────────────────
-df = pd.read_csv("lsd_mu_ibm_72_12_6.csv", skipinitialspace=True)
+df = pd.read_csv(os.path.join(HERE, "lsd_mu_ibm_72_12_6.csv"), skipinitialspace=True)
 df["json_metadata"] = df["json_metadata"].apply(json.loads)
 df["code"]      = df["json_metadata"].apply(lambda m: m["code"])
 df["p"]         = df["json_metadata"].apply(lambda m: m["p"])
@@ -71,7 +74,7 @@ ax.set_title(r"BP-LSD on BB $[[72,12,6]]$")
 ax.set_yscale("log")
 ax.legend(title="LSD order", fontsize=7, title_fontsize=7, loc="upper left")
 fig.tight_layout()
-fig.savefig("lsd_mu_72_12_6.pdf")
+fig.savefig(os.path.join(HERE, "lsd_mu_72_12_6.pdf"))
 print("Saved lsd_mu_72_12_6.pdf")
 
 
@@ -93,7 +96,7 @@ ax.set_ylabel(r"Logical error rate per cycle $p_L$")
 ax.set_title(r"BP-LSD on BB $[[72,12,6]]$ — IBM data")
 ax.legend(title="LSD order", fontsize=7, title_fontsize=7, loc="upper left")
 fig.tight_layout()
-fig.savefig("lsd_mu_72_12_6_loglog.pdf")
+fig.savefig(os.path.join(HERE, "lsd_mu_72_12_6_loglog.pdf"))
 print("Saved lsd_mu_72_12_6_loglog.pdf")
 
 
@@ -121,7 +124,7 @@ ax.set_ylabel(r"Logical error rate per cycle $p_L$")
 ax.set_title(r"BP-LSD ($\mu=0$) on BB codes")
 ax.legend(fontsize=9, loc="upper left")
 fig.tight_layout()
-fig.savefig("lsd_mu_multicode_loglog.pdf")
+fig.savefig(os.path.join(HERE, "lsd_mu_multicode_loglog.pdf"))
 print("Saved lsd_mu_multicode_loglog.pdf")
 
 # ── Key numbers at p=0.001 ───────────────────────────────────────────────
