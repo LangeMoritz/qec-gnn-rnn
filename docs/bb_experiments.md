@@ -105,7 +105,7 @@ sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260303
 
 ## Exp BB-3: Sliding window + 12 separate GRUs + multi-p training
 
-**Status**: PENDING (commit `da2b5d6`; precompute_bposd running for new p values)
+**Status**: RUNNING — job 6038575
 
 **Goal**: Improved architecture to close the ~100× gap to BP-OSD-0.
 Three simultaneous improvements over BB-2:
@@ -126,9 +126,9 @@ Three simultaneous improvements over BB-2:
 - lr = 1e-3, n_epochs = 1000, batch_size auto-tuned, n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
 
-**Command**:
+**Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2   # job 6038575
 ```
 
 ---
