@@ -20,6 +20,7 @@
 | [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
 | [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
+| [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 
 ---
 
@@ -637,4 +638,64 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 
 ### Results
 
-_(pending)_
+**Training results** (wandb, 1000 epochs, MWPM ≈ 94.86–94.89%):
+
+| Run | Job | Best acc | vs MWPM |
+|-----|-----|----------|---------|
+| d=5 `trainable_lr1e-4` | 6032067 | 94.51% | **−0.38%** (below MWPM) |
+| d=9 `trainable_lr1e-4` | 6032068 | pending | — |
+
+### Analysis
+
+The d=5 run fails to beat MWPM despite 1000 epochs of training with a fully trainable base. Root cause: the effective learning rate (lr / batch_size) is 5× lower than the Exp 12 winner.
+
+**Effective LR comparison** (linear scaling rule, lr / batch_size):
+
+| Run | LR | Batch | Effective LR | Best acc |
+|-----|----|-------|--------------|----------|
+| Exp 12 winner (`trainable_gnn`, 6005310) | 1e-3 | 4096 (auto) | 2.44e-7 | 96.78% |
+| Exp 13 `adaptive_lr` (6020435) — meta | 1e-3 | 8192 (auto) | 1.22e-7 | 95.94% |
+| Exp 13 `adaptive_lr` (6020435) — base GNN | 1e-5 | 8192 (auto) | 1.22e-9 | — |
+| Exp 14 `trainable_lr1e-4` (6032067) | 1e-4 | 2048 | 4.88e-8 | 94.51% |
+
+Note: Exp 14 used a smaller batch (2048) than Exp 13, compounding the low-LR effect. All three challenger runs are slower than the winner in effective LR terms; Exp 14 is 5× weaker. Exp 15 is a direct control to confirm this diagnosis.
+
+---
+
+## Experiment 15: Control — match Exp 12 effective LR
+
+**Goal**: Confirm that Exp 14's regression vs Exp 12 was purely due to lower effective LR. Replicate the Exp 12 winner's exact optimisation regime (lr=1e-3, batch=4096, no auto-batch) with the same codebase as Exp 14. If this matches Exp 12's ~96.78%, the effective LR is the sole differentiating factor.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Distance | 5 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples, same as Exp 12 winner) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12 winner exactly) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6038573 | `ctrl_lr1e-3_batch4096` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 4096 128 1000 ctrl_lr1e-3_batch4096 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+```
+
+### Results
+
+_(pending — job 6038573)_
