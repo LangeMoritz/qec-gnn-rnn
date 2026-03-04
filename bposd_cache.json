@@ -1,6 +1,128 @@
 {
+  "72_6_0.0006": {
+    "p_l": 2.89597e-05,
+    "shots": 17541609,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
   "72_6_0.001": {
-    "p_l": 5.859374999994671e-05,
-    "shots": 51200
+    "p_l": 0.0001661327,
+    "shots": 3430993,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "72_6_0.002": {
+    "p_l": 0.0024502444,
+    "shots": 249771,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "72_6_0.003": {
+    "p_l": 0.0121223737,
+    "shots": 41741,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "72_6_0.004": {
+    "p_l": 0.0458399576,
+    "shots": 11322,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "72_6_0.005": {
+    "p_l": 0.1072805139,
+    "shots": 4670,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "72_6_0.006": {
+    "p_l": 0.1936728395,
+    "shots": 2592,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.0006": {
+    "p_l": 6.842e-06,
+    "shots": 74101492,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.001": {
+    "p_l": 3.7288e-05,
+    "shots": 13677326,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.002": {
+    "p_l": 0.0006065992,
+    "shots": 850644,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.003": {
+    "p_l": 0.0053395184,
+    "shots": 101320,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.004": {
+    "p_l": 0.0261559152,
+    "shots": 21563,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.005": {
+    "p_l": 0.0987776025,
+    "shots": 5072,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "108_10_0.006": {
+    "p_l": 0.256227758,
+    "shots": 1967,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.0006": {
+    "p_l": 2.7e-07,
+    "shots": 100000000,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.001": {
+    "p_l": 3.116e-06,
+    "shots": 99486521,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.002": {
+    "p_l": 0.0001829822,
+    "shots": 2770762,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.003": {
+    "p_l": 0.0029723473,
+    "shots": 171918,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.004": {
+    "p_l": 0.0218892661,
+    "shots": 25629,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.005": {
+    "p_l": 0.1029665072,
+    "shots": 5225,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
+  },
+  "144_12_0.006": {
+    "p_l": 0.3260738052,
+    "shots": 1653,
+    "lsd_order": 128,
+    "source": "Hillmann et al., \"Localized statistics decoding: A parallel decoding algorithm for quantum low-density parity-check codes\", 2023. Data from results/lsd_mu_ibm_72_12_6.csv, mu=128."
   }
 }
