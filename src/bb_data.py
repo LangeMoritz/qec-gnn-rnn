@@ -15,21 +15,22 @@ class BBDataset:
     Dataset for bivariate bicycle (BB) LDPC codes using a GRU-compatible
     per-round graph representation.
 
-    Each syndrome shot is represented as a sequence of g_max = t+1 per-round
-    sparse graphs:
-      - Rounds 0..t-1: active Z/X detectors from the syndrome measurement circuit.
-      - Round t (virtual): the "perfect final Z syndromes" obtained from data
-        qubit measurements at the end of the circuit.
+    Each syndrome shot is represented as a sliding-window sequence of
+    g_max = t - dt + 2 per-round graphs, where dt is the window size.
+    Each detection event at round r appears in chunks j = r - d for
+    d in range(dt), with local time coordinate d / max(dt-1, 1).
 
     generate_batch() returns the same 6-tuple format as data.Dataset so that
     BBGRUDecoder can share the same forward() / training loop structure.
     The only difference: last_label has shape [B, k] (not [B, 1]).
+    Node features are 4D: [type, x_norm, y_norm, t_local_norm].
     """
 
     def __init__(self, args: BBArgs):
         self.args = args
         self.batch_size = args.batch_size
         self.t = args.t
+        self.dt = args.dt
         self.device = args.device
 
         params = BB_CODE_PARAMS[args.code_size]
@@ -44,10 +45,11 @@ class BBDataset:
         self.n_stab = args.code_size   # = code.N (total data qubits = n)
         self.n_Z = self.n_stab // 2    # number of Z-checks (= X-checks)
 
-        # g_max: GRU sequence length
-        #   rounds 0..t-1: actual syndrome rounds
-        #   round t:       virtual final round (perfect Z syndromes from data measurement)
-        self.g_max = self.t + 1
+        # g_max: GRU sequence length with dt-round sliding window.
+        # Full syndromes span t+1 rounds (0..t-1 real + round t virtual).
+        # Each detection at round r appears in chunks j = r-d for d in [0, dt).
+        # Valid chunk range: [0, t+1-dt], giving g_max = t - dt + 2.
+        self.g_max = self.t - self.dt + 2
 
         # Precompute all-pairs shortest-path distance matrix between checks.
         # Shape: (n_stab, n_stab)  where 0..n_Z-1 = Z-checks, n_Z..n-1 = X-checks.
@@ -139,7 +141,8 @@ class BBDataset:
           row r  col 0..n_Z-1  : round r+1 Z syndromes     (→ GRU round r), r=1..d_t-1
           row r  col n_Z..n-1  : round r+1 X syndromes     (→ GRU round r), r=1..d_t-1
 
-        Returns syndromes_gru of shape (B, g_max, n_stab).
+        Returns syndromes_gru of shape (B, t+1, n_stab).
+        The sliding window expansion to g_max chunks is done in generate_batch().
         """
         B = det_arr.shape[0]
         n_Z = self.n_Z
@@ -149,7 +152,7 @@ class BBDataset:
         reordered = np.hstack([det_arr[:, -n_Z:], det_arr[:, :-n_Z]])
         raw = reordered.reshape(B, t, self.n_stab)
 
-        syndromes_gru = np.zeros((B, self.g_max, self.n_stab), dtype=bool)
+        syndromes_gru = np.zeros((B, t + 1, self.n_stab), dtype=bool)
 
         # GRU round 0: first actual syndrome round — Z-checks only.
         # raw[:, 0, n_Z:] holds first-round Z measurements;
@@ -164,7 +167,7 @@ class BBDataset:
         # qubit measurement, stored in raw[:, 0, :n_Z].
         syndromes_gru[:, t, :n_Z] = raw[:, 0, :n_Z]
 
-        return syndromes_gru   # (B, g_max, n_stab)
+        return syndromes_gru   # (B, t+1, n_stab)
 
     # ------------------------------------------------------------------
     # Batch generation
@@ -188,19 +191,44 @@ class BBDataset:
             det_arr = np.concatenate([p[0] for p in parts])
             obs_arr = np.concatenate([p[1] for p in parts])
 
-        # (B, g_max, n_stab) boolean array
+        # (B, t+1, n_stab) boolean array
         syndromes_gru = self._reshape_detections(det_arr)
         B = syndromes_gru.shape[0]
 
-        # Vectorised: indices of all active (shot, round, stab) triples.
-        # np.where returns in C order → sorted by (shot, round, stab).
-        shot_idx, round_idx, stab_idx = np.where(syndromes_gru)
+        # Active (shot, round, stab) triples from all t+1 rounds.
+        shot_idx_r, round_idx_r, stab_idx_r = np.where(syndromes_gru)
 
-        # Node features: [type, coord_x_norm, coord_y_norm]
-        node_features = self.node_feat_template[stab_idx]  # (N, 3)
+        # Expand into sliding-window chunks: detection at round r appears in
+        # chunk j = r - d for d in range(dt), provided 0 <= j < g_max.
+        # Local time within chunk = d (normalized to [0, 1] by dt-1).
+        all_shots, all_chunks, all_local_t, all_stabs = [], [], [], []
+        for d in range(self.dt):
+            valid = (round_idx_r - d >= 0) & (round_idx_r - d < self.g_max)
+            all_shots.append(shot_idx_r[valid])
+            all_chunks.append(round_idx_r[valid] - d)
+            all_local_t.append(np.full(valid.sum(), d, dtype=np.float32))
+            all_stabs.append(stab_idx_r[valid])
+
+        shot_idx  = np.concatenate(all_shots)
+        chunk_idx = np.concatenate(all_chunks)
+        local_t   = np.concatenate(all_local_t)
+        stab_idx  = np.concatenate(all_stabs)
+
+        # Sort by (shot, chunk) so group detection in label_map works correctly.
+        sort_key = shot_idx.astype(np.int64) * self.g_max + chunk_idx.astype(np.int64)
+        order = np.argsort(sort_key, kind='stable')
+        shot_idx  = shot_idx[order]
+        chunk_idx = chunk_idx[order]
+        local_t   = local_t[order]
+        stab_idx  = stab_idx[order]
+
+        # 4D node features: [type, x_norm, y_norm, t_local_norm]
+        t_local_norm = local_t / max(self.dt - 1, 1)
+        spatial_feats = self.node_feat_template[stab_idx]           # (N, 3)
+        node_features = np.column_stack([spatial_feats, t_local_norm])  # (N, 4)
 
         batch_labels = shot_idx    # (N,)
-        chunk_labels = round_idx   # (N,)
+        chunk_labels = chunk_idx   # (N,)
 
         # Build label_map: one entry per unique (batch, chunk) group, in order.
         g_max = self.g_max
@@ -263,14 +291,10 @@ class BBDataset:
             src_stabs = stab_idx[global_src]
             tgt_stabs = stab_idx[global_tgt]
 
-            dists  = self.dist_matrix[src_stabs, tgt_stabs]
-            valid  = dists > 0
-            if not valid.any():
-                continue
-
-            edge_src_parts.append(global_src[valid])
-            edge_tgt_parts.append(global_tgt[valid])
-            edge_w_parts.append(1.0 / dists[valid] ** 2)
+            dists = self.dist_matrix[src_stabs, tgt_stabs]
+            edge_src_parts.append(global_src)
+            edge_tgt_parts.append(global_tgt)
+            edge_w_parts.append(1.0 / np.maximum(dists, 1.0) ** 2)
 
         if edge_src_parts:
             return (np.concatenate(edge_src_parts).astype(np.int64),

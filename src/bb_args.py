@@ -20,6 +20,7 @@ class BBArgs:
     error_rate: float = 0.001
     error_rates: list[float] | None = None  # if set, train on mix of error rates
     t: int = 6                   # syndrome rounds (default matches code distance)
+    dt: int = 2                  # sliding window size; g_max = t - dt + 2
     seed: int | None = None
 
     # Torch

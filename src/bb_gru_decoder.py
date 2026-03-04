@@ -58,18 +58,15 @@ class BBGRUDecoder(nn.Module):
         # Learnable embedding for rounds with no active detectors
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
-        # GRU
-        self.rnn = nn.GRU(
-            args.embedding_features[-1],
-            args.hidden_size,
-            num_layers=args.n_gru_layers,
-            batch_first=True,
-        )
-
-        # k-output decoder head (no Sigmoid — use BCEWithLogitsLoss)
+        # One independent GRU + linear decoder per logical observable.
         from bb_args import BB_CODE_PARAMS
         k = BB_CODE_PARAMS[args.code_size]["k"]
-        self.decoder = nn.Linear(args.hidden_size, k)
+        self.rnns = nn.ModuleList([
+            nn.GRU(args.embedding_features[-1], args.hidden_size,
+                   num_layers=args.n_gru_layers, batch_first=True)
+            for _ in range(k)
+        ])
+        self.decoders = nn.ModuleList([nn.Linear(args.hidden_size, 1) for _ in range(k)])
 
     # ------------------------------------------------------------------
     # Forward
@@ -89,19 +86,21 @@ class BBGRUDecoder(nn.Module):
         (→ predicted class 0 for all k observables) without flowing through
         the GRU/decoder.
         """
-        k = self.decoder.out_features
+        k = len(self.decoders)
 
         # All shots in the batch are trivial — nothing to embed.
         if x.shape[0] == 0:
-            return torch.zeros(B, k, device=self.decoder.weight.device)
+            return torch.zeros(B, k, device=self.decoders[0].weight.device)
 
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
         g_max = int(label_map[:, 1].max().item()) + 1
         bulk  = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
         # bulk: [B, g_max, embed_dim]
 
-        _, h = self.rnn(bulk)
-        logits = self.decoder(h[-1])   # [B, k]
+        logits = torch.cat(
+            [dec(rnn(bulk)[1][-1]) for rnn, dec in zip(self.rnns, self.decoders)],
+            dim=1,
+        )  # [B, k]
 
         # Zero logits for any shots that had no active detectors at all.
         # These shots don't appear in label_map[:, 0], so we detect them by

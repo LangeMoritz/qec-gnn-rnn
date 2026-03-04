@@ -47,8 +47,10 @@ def parse_args():
                    help="Minimum LR for scheduler (default: 1e-4, or --lr if lower)")
     p.add_argument("--hidden",  type=int,   default=256)
     p.add_argument("--n_gru",   type=int,   default=2)
-    p.add_argument("--embed",   type=int,   nargs="+", default=[3, 64, 256],
-                   help="GNN embedding layer sizes (first must be 3)")
+    p.add_argument("--dt",      type=int,   default=2,
+                   help="Sliding window size; g_max = t - dt + 2 (default: 2)")
+    p.add_argument("--embed",   type=int,   nargs="+", default=[4, 64, 256],
+                   help="GNN embedding layer sizes (first must match node feature dim, default 4)")
     p.add_argument("--wandb",         action="store_true")
     p.add_argument("--wandb_project", type=str, default="GNN-RNN-BB-codes")
     p.add_argument("--no_prefetch", action="store_true")
@@ -75,6 +77,7 @@ def main():
         error_rate       = cli.p,
         error_rates      = cli.p_list,
         t                = t,
+        dt               = cli.dt,
         seed             = cli.seed,
         batch_size       = cli.batch,
         n_batches        = cli.nbatch,
