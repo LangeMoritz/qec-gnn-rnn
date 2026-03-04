@@ -21,6 +21,7 @@
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
 | [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
 | [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
+| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 
 ---
 
@@ -589,7 +590,8 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 
 ### Results
 
-_(pending — jobs 6020435, 6020436)_
+- **6020435** (`adaptive_lr`, d=5): best acc 95.94% (below Exp 12 winner 96.78%). Per-group LR suppressed base GNN adaptation (d=3 base effective LR 200× lower than winner). See Exp 14 analysis.
+- **6020436** (`d9_from_exp12`, d=9): stuck at ~87% — per-group LR caused d=3 base to train at effective LR 2.44e-9 (100× below the useful regime). **Killed** at epoch ~205.
 
 ---
 
@@ -627,7 +629,7 @@ _(pending — jobs 6020435, 6020436)_
 | SLURM job | Run | Note |
 |-----------|-----|------|
 | 6032067 | A (d=5) | `trainable_lr1e-4` |
-| 6032068 | B (d=9) | `trainable_lr1e-4` |
+| 6032068 | B (d=9) | `trainable_lr1e-4` | **Killed** (superseded by Exp 16) |
 
 ### Commands
 
@@ -699,3 +701,51 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 4096 12
 ### Results
 
 _(pending — job 6038573)_
+
+---
+
+## Experiment 16: d=9 continued training from Exp 13B
+
+**Goal**: Continue training the best d=9 checkpoint (`uniform_lr_d9`, Exp 13B) which reached 95.57% after 1000 epochs but was still improving. Restart with a fresh LR schedule (lr=1e-3 → 1e-4, same 0.95^ep decay) from the saved weights — this acts as a warm restart. Run for 3000 epochs to give sufficient time to converge. All d=9 runs with lower effective LR (6020436, 6032068) were killed.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Context
+
+- Scheduler is `LambdaLR(0.95^ep, floor=0.1)` — exponential decay, floors at 10% of starting LR (~epoch 45). No warm restarts in the scheduler; `load_path` resets the optimizer, so the high-LR phase acts as a warm restart.
+- `uniform_lr_d9` (6021817): 1000 epochs, final acc 95.57% vs MWPM 98.73%, loss still declining at ep 998 — not converged.
+- Killed runs: 6020436 (effective LR 100× too low for base), 6032068 (effective LR 5× too low overall).
+- Effective LR at start: 1e-3 / 4096 = 2.44e-7 (matches Exp 12 d=5 winner exactly).
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` (Exp 12 best) |
+| Load path | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` |
+| Distance | 9 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 3000 |
+| Learning rate | 1e-3 → 1e-4 (0.95^ep, floor at ep ~45) |
+| Effective LR | 2.44e-7 → 2.44e-8 |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6038870 | `uniform_lr_d9_cont` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 3000 uniform_lr_d9_cont GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 "" no_auto_batch_size
+```
+
+### Results
+
+_(pending — job 6038870)_
