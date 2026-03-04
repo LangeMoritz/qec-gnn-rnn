@@ -98,6 +98,7 @@ Gap: NN is ~100× worse than BP-OSD-0 in P_L (vs ~290× for BB-1).
 **Commands**:
 ```bash
 sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"   # job 6031466
+sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260303_141550 "" 1024 "3 64 128 256 512 1024" 1e-5  # job 6037810 — continue at lr=1e-5 (constant)
 ```
 
 ---
