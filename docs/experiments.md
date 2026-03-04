@@ -22,6 +22,7 @@
 | [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
 | [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 | [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
+| [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | in progress |
 
 ---
 
@@ -749,3 +750,44 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 ### Results
 
 _(pending — job 6038870)_
+
+---
+
+## Experiment 17: Hierarchical Decoder d=7 (3×3 patches of d=3)
+
+**Goal**: First d=7 hierarchical decoder run, using the new `ThreeByThreeHierarchicalDataset` (9 overlapping d=3 patches in a 3×3 grid) and `MetaGRUDecoder3x3` (Conv2d(kernel=3) spatial aggregation). Settings match Exp 15 exactly — same base model, same effective LR regime (lr=1e-3, batch=4096), fully trainable base — to enable a direct d=5 vs d=7 comparison.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9, same as Exp 15) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12/15) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 (new — d=7 only) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6039967 | `ctrl_lr1e-3_batch4096` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 ctrl_lr1e-3_batch4096 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+```
+
+### Results
+
+_(pending — job 6039967)_
