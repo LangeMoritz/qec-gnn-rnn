@@ -58,14 +58,16 @@ class BBGRUDecoder(nn.Module):
         # Learnable embedding for rounds with no active detectors
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
-        # One independent GRU + linear decoder per logical observable.
+        # Shared GRU processes the per-round embedding sequence.
+        # k separate linear heads decode each logical observable from the
+        # final GRU hidden state.  The shared GRU receives gradient from all
+        # k heads simultaneously, giving it the same learning signal as the
+        # single-head BB-2 baseline while still allowing per-observable
+        # specialisation in the output layer.
         from bb_args import BB_CODE_PARAMS
         k = BB_CODE_PARAMS[args.code_size]["k"]
-        self.rnns = nn.ModuleList([
-            nn.GRU(args.embedding_features[-1], args.hidden_size,
-                   num_layers=args.n_gru_layers, batch_first=True)
-            for _ in range(k)
-        ])
+        self.rnn = nn.GRU(args.embedding_features[-1], args.hidden_size,
+                          num_layers=args.n_gru_layers, batch_first=True)
         self.decoders = nn.ModuleList([nn.Linear(args.hidden_size, 1) for _ in range(k)])
 
     # ------------------------------------------------------------------
@@ -97,8 +99,9 @@ class BBGRUDecoder(nn.Module):
         bulk  = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
         # bulk: [B, g_max, embed_dim]
 
+        h_final = self.rnn(bulk)[1][-1]   # [B, hidden_size]
         logits = torch.cat(
-            [dec(rnn(bulk)[1][-1]) for rnn, dec in zip(self.rnns, self.decoders)],
+            [dec(h_final) for dec in self.decoders],
             dim=1,
         )  # [B, k]
 
