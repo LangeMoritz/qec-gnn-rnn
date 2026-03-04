@@ -22,8 +22,9 @@ from args import Args
 from gru_decoder import GRUDecoder
 from data import (HierarchicalDataset, HierarchicalBatchPrefetcher,
                   TwoLevelHierarchicalDataset, TwoLevelHierarchicalBatchPrefetcher,
+                  ThreeByThreeHierarchicalDataset, ThreeByThreeHierarchicalBatchPrefetcher,
                   find_optimal_batch_size_hierarchical)
-from hierarchical_decoder import MetaGRUDecoder
+from hierarchical_decoder import MetaGRUDecoder, MetaGRUDecoder3x3
 from utils import TrainingLogger
 
 
@@ -196,9 +197,15 @@ if __name__ == "__main__":
     if base_is_meta:
         DatasetCls    = TwoLevelHierarchicalDataset
         PrefetcherCls = TwoLevelHierarchicalBatchPrefetcher
+        base_is_3x3   = False
+    elif cli.d == 7:
+        DatasetCls    = ThreeByThreeHierarchicalDataset
+        PrefetcherCls = ThreeByThreeHierarchicalBatchPrefetcher
+        base_is_3x3   = True
     else:
         DatasetCls    = HierarchicalDataset
         PrefetcherCls = HierarchicalBatchPrefetcher
+        base_is_3x3   = False
 
     # Print patch geometry info
     _ds = DatasetCls(args)
@@ -210,20 +217,25 @@ if __name__ == "__main__":
             for i_inner in range(4):
                 n_inner = len(_ds.sub_patch_local_indices[i_outer][i_inner])
                 print(f"    inner {['TL','TR','BL','BR'][i_inner]}: {n_inner} sub-detectors")
+    elif base_is_3x3:
+        patch_labels = ['TL','TC','TR','ML','MC','MR','BL','BC','BR']
+        for p in range(9):
+            print(f"  {patch_labels[p]}: {len(_ds.patch_indices[p])} detectors")
     else:
         for p in range(4):
             print(f"  {['TL','TR','BL','BR'][p]}: {len(_ds.patch_indices[p])} detectors")
     del _ds
 
     # ── Meta-model ──
-    meta_model = MetaGRUDecoder(
+    MetaModelCls = MetaGRUDecoder3x3 if base_is_3x3 else MetaGRUDecoder
+    meta_model = MetaModelCls(
         base_model, cli.meta_hidden, cli.n_meta_layers,
         trainable_base=cli.trainable_base,
         warm_start_rnn=not cli.random_base and not base_is_meta,
     ).to(device)
     n_trainable = sum(p.numel() for p in meta_model.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in meta_model.parameters() if not p.requires_grad)
-    print(f"MetaGRUDecoder: {n_trainable:,} trainable params, {n_frozen:,} frozen params")
+    print(f"{MetaModelCls.__name__}: {n_trainable:,} trainable params, {n_frozen:,} frozen params")
 
     if cli.load_path:
         meta_ckpt = torch.load(f"./models/{cli.load_path}.pt", weights_only=False, map_location=device)
@@ -361,7 +373,7 @@ if __name__ == "__main__":
             best_accuracy = epoch_acc
             os.makedirs("./models", exist_ok=True)
             raw_model = getattr(meta_model, '_orig_mod', meta_model)
-            torch.save({
+            ckpt_dict = {
                 "state_dict": raw_model.state_dict(),
                 "base_model_name": cli.base_model,
                 "args": vars(args),
@@ -371,7 +383,10 @@ if __name__ == "__main__":
                 "random_base": cli.random_base,
                 "history": history,
                 "best_epoch": epoch,
-            }, f"./models/{model_name}.pt")
+            }
+            if base_is_3x3:
+                ckpt_dict["grid_size"] = 3
+            torch.save(ckpt_dict, f"./models/{model_name}.pt")
 
     # ── Test ──
     test_results = {}

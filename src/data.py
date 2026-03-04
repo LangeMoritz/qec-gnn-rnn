@@ -783,6 +783,149 @@ class TwoLevelHierarchicalBatchPrefetcher:
             self._thread.join(timeout=5)
 
 
+def _three_bounds(cuts):
+    """Yield (lo_cut, hi_cut) triples for 3 overlapping groups defined by 2 cut points.
+
+    Group 0: x ≤ cuts[0]+1  (lo=None)
+    Group 1: cuts[0]-1 ≤ x ≤ cuts[1]+1
+    Group 2: x ≥ cuts[1]-1  (hi=None)
+    """
+    yield (None, cuts[0] + 1)
+    yield (cuts[0] - 1, cuts[1] + 1)
+    yield (cuts[1] - 1, None)
+
+
+class ThreeByThreeHierarchicalDataset(HierarchicalDataset):
+    """Splits a d=7 circuit into a 3×3 grid of 9 overlapping d=3 patches.
+
+    The d=7 lattice (x,y ∈ {0,2,...,14}) is split at two cut points per axis,
+    yielding 9 patches in row-major order: TL, TC, TR, ML, MC, MR, BL, BC, BR.
+    Boundary detectors are replicated into adjacent patches.
+
+    generate_batch() returns patch_batches as list[9] of 5-tuples.
+    """
+
+    def _setup_patches(self):
+        coords = self._full.detector_coordinates[0]  # [n_det, 3] int64
+        x, y = coords[:, 0], coords[:, 1]
+        x_min, x_max = int(x.min()), int(x.max())
+        y_min, y_max = int(y.min()), int(y.max())
+        # step = (range - 6) // 2  →  for d=7: (14-6)//2 = 4
+        x_step = (x_max - x_min - 6) // 2
+        y_step = (y_max - y_min - 6) // 2
+        x_cuts = [x_min + (k + 1) * x_step + 1 for k in range(2)]  # [5, 9] for d=7
+        y_cuts = [y_min + (k + 1) * y_step + 1 for k in range(2)]  # [5, 9] for d=7
+
+        # 9 masks in row-major order: row = y group, col = x group
+        patch_masks = []
+        for yc_lo, yc_hi in _three_bounds(y_cuts):
+            for xc_lo, xc_hi in _three_bounds(x_cuts):
+                mask = np.ones(len(x), dtype=bool)
+                if xc_lo is not None:
+                    mask &= (x >= xc_lo)
+                if xc_hi is not None:
+                    mask &= (x <= xc_hi)
+                if yc_lo is not None:
+                    mask &= (y >= yc_lo)
+                if yc_hi is not None:
+                    mask &= (y <= yc_hi)
+                patch_masks.append(mask)
+
+        self.patch_indices = [np.where(m)[0] for m in patch_masks]
+        self._patch_coords = []
+        self._patch_pos_idx = []
+        self._patch_edge_weights = []
+        self._patch_local_pairs: list[dict] = [{} for _ in range(9)]
+
+        for mask in patch_masks:
+            pc = coords[mask].copy()
+            pc[:, :2] -= pc[:, :2].min(axis=0)  # translate to origin
+            self._patch_coords.append(pc)
+            pos_idx, ew = self._build_edge_weights(pc)
+            self._patch_pos_idx.append(pos_idx)
+            self._patch_edge_weights.append(ew)
+
+    def generate_batch(self):
+        """Sample from the full circuit and return 9 patch sub-batches.
+
+        Returns:
+            patch_batches: list of 9 × (x, edge_index, labels, label_map, edge_attr)
+                           ordered [TL, TC, TR, ML, MC, MR, BL, BC, BR]
+            last_label: [B, 1] float32 tensor
+            g_max: number of time chunks per sample
+        """
+        full = self._full
+        n_p = len(full.samplers)
+        if n_p == 1:
+            syndromes, label_data = full._sample_n(0, full.batch_size)
+        else:
+            per_p = full.batch_size // n_p
+            remainder = full.batch_size - per_p * n_p
+            counts = [per_p + (1 if i < remainder else 0) for i in range(n_p)]
+            parts_s, parts_l = zip(*[full._sample_n(i, counts[i]) for i in range(n_p)])
+            syndromes = np.concatenate(parts_s)
+            label_data = np.concatenate(parts_l)
+        last_label = torch.from_numpy(label_data).to(
+            dtype=torch.float32, device=full.device
+        )
+        sampler_t = full._sampler_t[0]
+
+        def _build(p):
+            return self._build_patch_batch(
+                syndromes[:, self.patch_indices[p]],
+                self._patch_coords[p],
+                self._patch_pos_idx[p],
+                self._patch_edge_weights[p],
+                self._patch_local_pairs[p],
+                sampler_t,
+            )
+
+        with ThreadPoolExecutor(max_workers=9) as executor:
+            patch_batches = list(executor.map(_build, range(9)))
+        return patch_batches, last_label, sampler_t - full.dt + 2
+
+
+class ThreeByThreeHierarchicalBatchPrefetcher:
+    """Like HierarchicalBatchPrefetcher but for ThreeByThreeHierarchicalDataset."""
+
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = ThreeByThreeHierarchicalDataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        self._stop.clear()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
 def find_optimal_batch_size(args: Args, model, candidates=None):
     """Warmup: try batch sizes, measure throughput, pick best.
 
