@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument("--batch",   type=int,   default=2048)
     p.add_argument("--nbatch",  type=int,   default=256)
     p.add_argument("--lr",      type=float, default=1e-3)
+    p.add_argument("--min_lr",  type=float, default=None,
+                   help="Minimum LR for scheduler (default: 1e-4, or --lr if lower)")
     p.add_argument("--hidden",  type=int,   default=256)
     p.add_argument("--n_gru",   type=int,   default=2)
     p.add_argument("--embed",   type=int,   nargs="+", default=[3, 64, 256],
@@ -65,6 +67,9 @@ def main():
     params = BB_CODE_PARAMS[cli.code_size]
     t = cli.t if cli.t is not None else params["d"]
 
+    # If min_lr not set, default to 1e-4 but cap at lr (so --lr 1e-5 implies min_lr=1e-5)
+    min_lr = cli.min_lr if cli.min_lr is not None else min(1e-4, cli.lr)
+
     args = BBArgs(
         code_size        = cli.code_size,
         error_rate       = cli.p,
@@ -75,6 +80,7 @@ def main():
         n_batches        = cli.nbatch,
         n_epochs         = cli.epochs,
         lr               = cli.lr,
+        min_lr           = min_lr,
         embedding_features = cli.embed,
         hidden_size      = cli.hidden,
         n_gru_layers     = cli.n_gru,

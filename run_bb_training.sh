@@ -13,23 +13,25 @@ source .venv/bin/activate
 pip install ldpc --quiet 2>/dev/null
 
 # Usage:
-#   sbatch run_bb_training.sh  code_size  t  p  epochs  [wandb_project]  [load]  [p_list]  [hidden]  [embed]
+#   sbatch run_bb_training.sh  code_size  t  p  epochs  [wandb_project]  [load]  [p_list]  [hidden]  [embed]  [lr]
 #
-# $1: code_size       72|90|108|144|288  (default: 72)
-# $2: t               syndrome rounds    (default: code distance)
-# $3: p               error rate         (default: 0.001)
-# $4: epochs          training epochs    (default: 500)
-# $5: wandb_project   enables --wandb if set (e.g. "GNN-RNN-BB-codes")
-# $6: load            model name to resume (no models/ prefix, no .pt)
-# $7: p_list          space-separated multi-p training (e.g. "0.001 0.003 0.005")
-# $8: hidden          GRU hidden size (default: 256)
-# $9: embed           space-separated GNN layer sizes (e.g. "3 64 128 256 512 1024")
+# $1:  code_size       72|90|108|144|288  (default: 72)
+# $2:  t               syndrome rounds    (default: code distance)
+# $3:  p               error rate         (default: 0.001)
+# $4:  epochs          training epochs    (default: 500)
+# $5:  wandb_project   enables --wandb if set (e.g. "GNN-RNN-BB-codes")
+# $6:  load            model name to resume (no models/ prefix, no .pt)
+# $7:  p_list          space-separated multi-p training (e.g. "0.001 0.003 0.005")
+# $8:  hidden          GRU hidden size (default: 256)
+# $9:  embed           space-separated GNN layer sizes (e.g. "3 64 128 256 512 1024")
+# $10: lr              learning rate (default: 1e-3; min_lr auto-set to same value)
 #
 # Examples:
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes "" "0.001 0.003 0.005"
 #   sbatch run_bb_training.sh 72 6 0.001 300 GNN-RNN-BB-codes my_model
 #   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"
+#   sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes my_model "" 1024 "3 64 128 256 512 1024" 1e-5
 
 python -u scripts/train_bb.py \
     --code_size "${1:-72}" \
@@ -40,4 +42,5 @@ python -u scripts/train_bb.py \
     ${6:+--load "$6"} \
     ${7:+--p_list $7} \
     ${8:+--hidden "$8"} \
-    ${9:+--embed $9}
+    ${9:+--embed $9} \
+    ${10:+--lr "${10}"}
