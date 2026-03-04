@@ -105,30 +105,31 @@ sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260303
 
 ## Exp BB-3: Sliding window + 12 separate GRUs + multi-p training
 
-**Status**: RUNNING — job 6038575
+**Status**: RUNNING — job 6039500 (job 6038575 cancelled: 12-GRU gradient bug)
 
 **Goal**: Improved architecture to close the ~100× gap to BP-OSD-0.
 Three simultaneous improvements over BB-2:
 1. **Sliding window graphs** (dt=2): each detection at round r appears in chunks
    j = r−d for d ∈ {0,1}, with 4D node features [type, x_norm, y_norm, t_local_norm].
    g_max = t − dt + 2 = 6. Gives the GNN local temporal context.
-2. **12 separate GRUs** (one per logical observable): replaces single GRU + k-head
-   linear with k=12 independent GRU(1024→256, 2-layer) + 12 Linear(256,1) heads.
-   Each GRU can specialize to one logical; total ~17.9M parameters.
+2. **Shared GRU + 12 linear heads**: single GRU(embed→1024, 2-layer) + 12 Linear(1024,1)
+   heads. 12 separate GRUs were tried first but failed: BCE mean over [B,k] gave
+   each GRU only 1/k of the gradient, stalling training at the trivial predictor.
 3. **Multi-p training** (p ∈ {0.001..0.005}): regularizes over error rate, should
    improve generalization and avoid overfitting to a single p.
 
 **Setup**:
 - Code: [[72, 12, 6]], t=6, dt=2, g_max=6
 - embedding_features = [4, 64, 128, 256, 512, 1024] (4 node features)
-- hidden_size = 256, n_gru_layers = 2
-- p_list = [0.001, 0.002, 0.003, 0.004, 0.005]
+- hidden_size = 1024, n_gru_layers = 2
+- p_list = [0.001, 0.002, 0.003]
 - lr = 1e-3, n_epochs = 1000, batch_size auto-tuned, n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
 
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2   # job 6038575
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2   # job 6038575 — CANCELLED (12-GRU gradient bug)
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2              # job 6039500
 ```
 
 ---
