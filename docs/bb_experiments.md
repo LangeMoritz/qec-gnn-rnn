@@ -65,7 +65,7 @@ sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302
 
 ## Exp BB-2: Larger model, [[72,12,6]]
 
-**Status**: RUNNING — job 6031466
+**Status**: DONE — final model: `bb72_t6_p0_001_260303_141550` (wandb: `z54gtf9x`)
 
 **Goal**: Close the 290× gap to BP-OSD-0 by increasing model capacity.
 BB-1 showed the 256-hidden model saturates around 98.3% (P_L=1.73%) despite 6500 epochs.
@@ -77,12 +77,27 @@ information from the syndrome graph per round.
 - embedding_features = [3, 64, 128, 256, 512, 1024] (6-layer GNN vs 3-layer)
 - hidden_size = 1024 (4× larger GRU)
 - n_gru_layers = 2, lr = 1e-3, n_epochs = 1000 (fresh start, no load)
-- batch_size = auto-tuned, n_batches = 256
+- batch_size = 2048 (auto-tuned), n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
+- Runtime: ~4.67 h (16807 s) for 1000 epochs
+
+**Results** (all-k=12-correct accuracy):
+| | Accuracy | P_L |
+|---|---|---|
+| NN (epoch 1000) | 99.39% | 0.61% |
+| BP-OSD-0 | 99.994% | 0.006% |
+
+Gap: NN is ~100× worse than BP-OSD-0 in P_L (vs ~290× for BB-1).
+
+**Trajectory**:
+- epoch 0: 27.3% → epoch 100: 96.6% → epoch 500: 98.9% → epoch 1000: 99.4%
+- LR hit min_lr=0.0001 after ~4 epochs; model still slowly improving at epoch 1000
+- **2.8× improvement in P_L** vs BB-1 (1.73% → 0.61%) with 4× larger GRU + 6-layer GNN
+- Still ~100× from BP-OSD-0; architecture change alone insufficient to close gap
 
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"   # job 6031466
 ```
 
 ---
