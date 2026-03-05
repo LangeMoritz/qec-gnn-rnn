@@ -848,7 +848,7 @@ LR decayed to min (1e-4) by epoch ~89; training has been at min LR for ~730 epoc
 
 | SLURM job | Note |
 |-----------|------|
-| TBD | `ctrl_lr1e-4_cont` |
+| 6048341 | `ctrl_lr1e-4_cont` |
 
 ### Commands
 
