@@ -65,7 +65,12 @@ class MetaGRUDecoder(nn.Module):
             nn.ReLU(),
         )
         self.meta_rnn = nn.GRU(meta_hidden, meta_hidden, num_layers=n_meta_layers, batch_first=True)
-        self.meta_decoder = nn.Sequential(nn.Linear(meta_hidden, 1), nn.Sigmoid())
+        self.meta_decoder = nn.Sequential(
+            nn.Linear(meta_hidden, meta_hidden),
+            nn.ReLU(),
+            nn.Linear(meta_hidden, 1),
+            nn.Sigmoid(),
+        )
 
         # Warm-start meta-GRU from base GRU when dimensions match
         if warm_start_rnn and meta_hidden == src_hidden and meta_hidden == embed_dim:
@@ -217,7 +222,12 @@ class MetaGRUDecoder3x3(nn.Module):
             nn.ReLU(),
         )
         self.meta_rnn = nn.GRU(meta_hidden, meta_hidden, num_layers=n_meta_layers, batch_first=True)
-        self.meta_decoder = nn.Sequential(nn.Linear(meta_hidden, 1), nn.Sigmoid())
+        self.meta_decoder = nn.Sequential(
+            nn.Linear(meta_hidden, meta_hidden),
+            nn.ReLU(),
+            nn.Linear(meta_hidden, 1),
+            nn.Sigmoid(),
+        )
 
         if warm_start_rnn and meta_hidden == src_hidden and meta_hidden == embed_dim:
             self._copy_base_rnn_weights()

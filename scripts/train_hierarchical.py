@@ -239,7 +239,11 @@ if __name__ == "__main__":
 
     if cli.load_path:
         meta_ckpt = torch.load(f"./models/{cli.load_path}.pt", weights_only=False, map_location=device)
-        getattr(meta_model, '_orig_mod', meta_model).load_state_dict(meta_ckpt["state_dict"])
+        raw = getattr(meta_model, '_orig_mod', meta_model)
+        missing, unexpected = raw.load_state_dict(meta_ckpt["state_dict"], strict=False)
+        if missing or unexpected:
+            print(f"  [partial load] missing keys: {missing}")
+            print(f"  [partial load] unexpected keys: {unexpected}")
         print(f"Loaded meta-model: {cli.load_path}")
         model_name = cli.load_path
     else:
