@@ -65,7 +65,7 @@ sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260302
 
 ## Exp BB-2: Larger model, [[72,12,6]]
 
-**Status**: DONE — final model: `bb72_t6_p0_001_260303_141550` (wandb: `z54gtf9x`)
+**Status**: DONE — final model: `bb72_t6_p0_001_260304_094339` (wandb: `z54gtf9x` + continuation)
 
 **Goal**: Close the 290× gap to BP-OSD-0 by increasing model capacity.
 BB-1 showed the 256-hidden model saturates around 98.3% (P_L=1.73%) despite 6500 epochs.
@@ -73,39 +73,39 @@ Hypothesis: model is capacity-limited; larger GNN embedding + GRU hidden size wi
 information from the syndrome graph per round.
 
 **Setup**:
-- Same code/t/p as BB-1: [[72, 12, 6]], t=6, p=0.001
-- embedding_features = [3, 64, 128, 256, 512, 1024] (6-layer GNN vs 3-layer)
-- hidden_size = 1024 (4× larger GRU)
-- n_gru_layers = 2, lr = 1e-3, n_epochs = 1000 (fresh start, no load)
+- Same code/t/p as BB-1: [[72, 12, 6]], t=6, p=0.001 (single p, one graph per t — no sliding window)
+- embedding_features = [3, 64, 128, 256, 512, 1024] (6-layer GNN vs 3-layer), 3D node features
+- hidden_size = 1024 (4× larger GRU), n_gru_layers = 2, lr = 1e-3
 - batch_size = 2048 (auto-tuned), n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
-- Runtime: ~4.67 h (16807 s) for 1000 epochs
+- Runtime: ~4.67 h for 1000 epochs; continued for 5000 more epochs from the same checkpoint
 
 **Results** (all-k=12-correct accuracy):
 | | Accuracy | P_L |
 |---|---|---|
 | NN (epoch 1000) | 99.39% | 0.61% |
-| BP-OSD-0 | 99.994% | 0.006% |
+| NN (epoch 6000, final) | 99.81% | 0.19% |
+| BP-OSD-0 | 99.99% | 0.01% |
 
-Gap: NN is ~100× worse than BP-OSD-0 in P_L (vs ~290× for BB-1).
+Gap: NN is ~19× worse than BP-OSD-0 in P_L at the end (vs ~100× at epoch 1000).
 
 **Trajectory**:
 - epoch 0: 27.3% → epoch 100: 96.6% → epoch 500: 98.9% → epoch 1000: 99.4%
-- LR hit min_lr=0.0001 after ~4 epochs; model still slowly improving at epoch 1000
-- **2.8× improvement in P_L** vs BB-1 (1.73% → 0.61%) with 4× larger GRU + 6-layer GNN
-- Still ~100× from BP-OSD-0; architecture change alone insufficient to close gap
+- Continuation loaded `bb72_t6_p0_001_260303_141550`; resumed at 99.38% → 99.81% over 5000 epochs
+- Loss: 0.0027 → 0.0009, clearly plateauing; improvement rate ~halving per doubling of epochs
+- **Architecture has hit its ceiling** for single-p training without sliding window — more training cannot close the gap to BP
 
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"   # job 6031466
-sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260303_141550 "" 1024 "3 64 128 256 512 1024" 1e-5  # job 6037810 — continue at lr=1e-5 (constant)
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 1024 "3 64 128 256 512 1024"   # job 6031466 → bb72_t6_p0_001_260303_141550
+sbatch run_bb_training.sh 72 6 0.001 5000 GNN-RNN-BB-codes bb72_t6_p0_001_260303_141550 "" 1024 "3 64 128 256 512 1024" 1e-5  # job 6037810 → bb72_t6_p0_001_260304_094339 (final)
 ```
 
 ---
 
-## Exp BB-3: Sliding window + 12 separate GRUs + multi-p training
+## Exp BB-3: Sliding window + shared GRU + multi-p training
 
-**Status**: RUNNING — job 6039500 (job 6038575 cancelled: 12-GRU gradient bug)
+**Status**: DONE — final model: `bb72_t6_p0_001_260304_130904`
 
 **Goal**: Improved architecture to close the ~100× gap to BP-OSD-0.
 Three simultaneous improvements over BB-2:
@@ -115,28 +115,63 @@ Three simultaneous improvements over BB-2:
 2. **Shared GRU + 12 linear heads**: single GRU(embed→1024, 2-layer) + 12 Linear(1024,1)
    heads. 12 separate GRUs were tried first but failed: BCE mean over [B,k] gave
    each GRU only 1/k of the gradient, stalling training at the trivial predictor.
-3. **Multi-p training** (p ∈ {0.001..0.005}): regularizes over error rate, should
-   improve generalization and avoid overfitting to a single p.
+3. **Multi-p training** (p ∈ {0.001, 0.002, 0.003}): regularizes over error rate.
 
 **Setup**:
 - Code: [[72, 12, 6]], t=6, dt=2, g_max=6
-- embedding_features = [4, 64, 128, 256, 512, 1024] (4 node features)
-- hidden_size = 1024, n_gru_layers = 2
-- p_list = [0.001, 0.002, 0.003]
-- lr = 1e-3, n_epochs = 1000, batch_size auto-tuned, n_batches = 256
+- embedding_features = [4, 64, 128, 256, 512, 1024] (4D node features, 6-layer GNN)
+- hidden_size = 1024, n_gru_layers = 2, lr = 1e-3
+- p_list = [0.001, 0.002, 0.003], n_epochs = 1000 (fresh start), n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
+
+**Results** (all-k=12-correct accuracy):
+| | Accuracy | P_L |
+|---|---|---|
+| NN (epoch 1000) | 94.0% | 6.0% |
+| BP-OSD-0 (avg over p_list) | 99.99% | ~0.01% |
+
+Still climbing steeply at epoch 1000 — not converged. Comparison with BB-2 at epoch 1000
+is not apples-to-apples: BB-2 loaded a well-trained checkpoint while BB-3 started fresh.
 
 **Commands**:
 ```bash
 sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2   # job 6038575 — CANCELLED (12-GRU gradient bug)
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2              # job 6039500
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2              # job 6039500 → bb72_t6_p0_001_260304_130904
 ```
 
 ---
 
-## Exp BB-4: Larger code [[144,12,12]]
+## Exp BB-4: MLP heads + 4 GRU layers + multi-p training
 
-**Status**: PLANNED (after BB-2)
+**Status**: RUNNING — job 6048009
+
+**Goal**: Improve over BB-3 with:
+1. **MLP decoder heads**: `Linear(1024, 256) → ReLU → Linear(256, 1)` per observable,
+   replacing the single linear projection. Gives each observable nonlinear feature
+   extraction from the shared GRU state.
+2. **4 GRU layers** (up from 2): deeper temporal processing.
+3. **Trivial shots through GRU**: shots with no active detectors now receive an
+   all-`empty_embedding` sequence through the GRU instead of hard-coded zero logits.
+4. **--test** at end of training: adaptive-sampling evaluation at all training p values
+   (target 1% rel_std, up to 10M shots per p).
+
+**Setup**:
+- Code: [[72, 12, 6]], t=6, dt=2, g_max=6
+- embedding_features = [4, 64, 128, 256, 512, 1024], hidden_size = 1024
+- n_gru_layers = 4, decoder_hidden = 256 (= hidden // 4)
+- p_list = [0.001, 0.002, 0.003], n_epochs = 1000 (fresh start), n_batches = 256
+- wandb project: `GNN-RNN-BB-codes`
+
+**Commands**:
+```bash
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test   # job 6048009
+```
+
+---
+
+## Exp BB-5: Larger code [[144,12,12]]
+
+**Status**: PLANNED
 
 **Goal**: Scale to the flagship [[144, 12, 12]] code.
 - t = 12, g_max = 13
