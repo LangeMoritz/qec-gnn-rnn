@@ -23,6 +23,7 @@
 | [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 | [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | in progress |
+| [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 
 ---
 
@@ -701,7 +702,13 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 4096 12
 
 ### Results
 
-_(pending — job 6038573)_
+**Training results** (1000 epochs, MWPM ≈ 94.83%):
+
+| Run | Job | Final acc | vs MWPM |
+|-----|-----|-----------|---------|
+| d=5 `ctrl_lr1e-3_batch4096` | 6038573 | **96.06%** | **+1.23%** |
+
+Confirms that Exp 14's regression was purely due to lower effective LR. Result closely matches Exp 12 winner (96.78%), validating the effective-LR hypothesis. The small gap vs Exp 12 may reflect dataset/codebase differences since Exp 12.
 
 ---
 
@@ -749,7 +756,17 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 
 ### Results
 
-_(pending — job 6038870)_
+**Training results** (in progress, ~629/3000 epochs, MWPM ≈ 98.75%):
+
+| Step | Acc | MWPM | Gap |
+|------|-----|------|-----|
+| 0 | 87.76% | 98.75% | −10.99% |
+| 140 | 97.49% | 98.75% | −1.26% |
+| 324 | 98.05% | 98.75% | −0.70% |
+| 518 | 98.32% | 98.75% | −0.43% |
+| 629 | 98.42% | 98.75% | −0.33% |
+
+Steady convergence; gap to MWPM shrinking at ~0.01%/step at min LR. Started from prior d=9 checkpoint (acc 87.76%) — not a cold start. On track to cross MWPM with sufficient epochs.
 
 ---
 
@@ -790,4 +807,55 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 12
 
 ### Results
 
-_(pending — job 6039967)_
+**Training results** (in progress, ~817/1000 epochs, MWPM ≈ 97.51%):
+
+| Step | Acc | MWPM | Gap |
+|------|-----|------|-----|
+| 0 | 52.61% | 97.51% | −44.90% |
+| 89 | 94.55% | 97.51% | −2.96% |
+| 333 | 96.06% | 97.51% | −1.45% |
+| 660 | 96.99% | 97.51% | −0.52% |
+| 826 | 96.62% | 97.51% | −0.89% |
+
+LR decayed to min (1e-4) by epoch ~89; training has been at min LR for ~730 epochs. Oscillating noisily (range 93.9–96.99%) and failing to cross MWPM. Continued with lower LR in Exp 18.
+
+---
+
+## Experiment 18: d=7 continued training with lr=1e-4
+
+**Goal**: Continue training the Exp 17 d=7 checkpoint with a lower starting LR (1e-4 → 1e-5 floor) to stabilise the noisy oscillations observed at the Exp 17 min LR. The model has been at LR=1e-4 for ~730 epochs without crossing MWPM; a warm restart at 1e-4 with a new decay schedule reduces the effective step size and may allow finer convergence.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Load path | `iterative_d7_p0.001_t50_dt2_260304_6039967_ctrl_lr1e-3_batch4096` (Exp 17) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 1000 |
+| Learning rate | 1e-4 → 1e-5 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| TBD | `ctrl_lr1e-4_cont` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 ctrl_lr1e-4_cont GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260304_6039967_ctrl_lr1e-3_batch4096 1e-4 no_auto_batch_size
+```
+
+### Results
+
+_(pending)_
