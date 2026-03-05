@@ -45,8 +45,10 @@ def parse_args():
     p.add_argument("--lr",      type=float, default=1e-3)
     p.add_argument("--min_lr",  type=float, default=None,
                    help="Minimum LR for scheduler (default: 1e-4, or --lr if lower)")
-    p.add_argument("--hidden",  type=int,   default=256)
-    p.add_argument("--n_gru",   type=int,   default=2)
+    p.add_argument("--hidden",        type=int,   default=256)
+    p.add_argument("--n_gru",         type=int,   default=4)
+    p.add_argument("--decoder_hidden", type=int,  default=None,
+                   help="MLP head intermediate dim (default: hidden // 4)")
     p.add_argument("--dt",      type=int,   default=2,
                    help="Sliding window size; g_max = t - dt + 2 (default: 2)")
     p.add_argument("--embed",   type=int,   nargs="+", default=[4, 64, 256],
@@ -60,6 +62,10 @@ def parse_args():
     p.add_argument("--save",    type=str, default=None,
                    help="Model name to save (auto-generated if not given)")
     p.add_argument("--seed",    type=int, default=None)
+    p.add_argument("--test",       action="store_true",
+                   help="Evaluate best checkpoint after training at all training (p, t) values")
+    p.add_argument("--test_shots", type=int, default=10_000_000,
+                   help="Max shots per p for adaptive testing (default: 10M)")
     return p.parse_args()
 
 
@@ -85,8 +91,9 @@ def main():
         lr               = cli.lr,
         min_lr           = min_lr,
         embedding_features = cli.embed,
-        hidden_size      = cli.hidden,
-        n_gru_layers     = cli.n_gru,
+        hidden_size          = cli.hidden,
+        n_gru_layers         = cli.n_gru,
+        decoder_hidden_size  = cli.decoder_hidden,
         log_wandb        = cli.wandb,
         wandb_project    = cli.wandb_project,
         prefetch         = not cli.no_prefetch,
@@ -125,12 +132,57 @@ def main():
         checkpoint_meta=checkpoint_meta,
     )
 
-    # Final evaluation
-    print("\n--- Final evaluation ---")
-    dataset = BBDataset(args)
-    acc, std = model.test_model(dataset, n_iter=200)
-    p_l = 1 - acc
-    print(f"P_L = {p_l:.4f} ± {std:.4f}  (over {200 * args.batch_size} shots)")
+    # ── Test ──
+    if cli.test:
+        import numpy as np
+        import json
+        from copy import deepcopy
+
+        print("\nLoading best checkpoint for evaluation...")
+        ckpt = torch.load(f"./models/{save_name}.pt", weights_only=False, map_location=args.device)
+        model.load_state_dict(ckpt["state_dict"])
+        model.eval()
+
+        error_rates = args.error_rates if args.error_rates else [args.error_rate]
+        target_rel_std = 0.01
+        test_results = {}
+
+        for p in error_rates:
+            print(f"\n--- p = {p}, t = {args.t} ---")
+            test_args = deepcopy(args)
+            test_args.error_rate = p
+            test_args.error_rates = None
+            dataset = BBDataset(test_args)
+
+            total_correct = total_shots = 0
+            with torch.no_grad():
+                while total_shots < cli.test_shots:
+                    x, edge_index, batch_labels, label_map, edge_attr, last_label = dataset.generate_batch()
+                    B = last_label.shape[0]
+                    logits = model(x, edge_index, edge_attr, batch_labels, label_map, B)
+                    pred = (torch.sigmoid(logits) > 0.5).long()
+                    total_correct += (pred == last_label.long()).all(dim=1).sum().item()
+                    total_shots += B
+                    p_l = 1 - total_correct / total_shots
+                    if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
+                        break
+
+            p_l = 1 - total_correct / total_shots
+            std = float(np.sqrt(p_l * (1 - p_l) / total_shots)) if total_shots > 0 else 0.0
+            print(f"  P_L = {p_l:.6f} +/- {std:.6f}  ({total_shots} shots)")
+            test_results[str(p)] = {
+                str(args.t): {"P_L": float(p_l), "std": std, "shots": total_shots}
+            }
+
+        ckpt["test_results"] = test_results
+        torch.save(ckpt, f"./models/{save_name}.pt")
+
+        os.makedirs("./logs", exist_ok=True)
+        log_path = f"./logs/{save_name}.json"
+        with open(log_path, "w") as f:
+            json.dump({"model_name": save_name, "args": vars(args),
+                       "test_results": test_results}, f, indent=2)
+        print(f"\nSaved: {log_path}")
 
 
 if __name__ == "__main__":

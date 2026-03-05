@@ -26,13 +26,14 @@ pip install ldpc --quiet 2>/dev/null
 # $9:  embed           space-separated GNN layer sizes (e.g. "4 64 128 256 512 1024")
 # $10: lr              learning rate (default: 1e-3; min_lr auto-set to same value)
 # $11: dt              sliding window size; g_max = t - dt + 2 (default: 2)
+# $12: test            any non-empty string enables --test (e.g. "test")
 #
 # Examples:
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes "" "0.001 0.003 0.005"
 #   sbatch run_bb_training.sh 72 6 0.001 300 GNN-RNN-BB-codes my_model
 #   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 256 "4 64 128 256 512 1024"
-#   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003 0.004 0.005" 256 "4 64 128 256 512 1024" 1e-3 2
+#   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test
 
 python -u scripts/train_bb.py \
     --code_size "${1:-72}" \
@@ -45,4 +46,5 @@ python -u scripts/train_bb.py \
     ${8:+--hidden "$8"} \
     ${9:+--embed $9} \
     ${10:+--lr "${10}"} \
-    ${11:+--dt "${11}"}
+    ${11:+--dt "${11}"} \
+    ${12:+--test}

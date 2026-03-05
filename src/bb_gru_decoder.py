@@ -59,16 +59,24 @@ class BBGRUDecoder(nn.Module):
         self.empty_embedding = nn.Parameter(torch.zeros(args.embedding_features[-1]))
 
         # Shared GRU processes the per-round embedding sequence.
-        # k separate linear heads decode each logical observable from the
-        # final GRU hidden state.  The shared GRU receives gradient from all
-        # k heads simultaneously, giving it the same learning signal as the
-        # single-head BB-2 baseline while still allowing per-observable
-        # specialisation in the output layer.
+        # k separate MLP heads (Linear → ReLU → Linear) decode each logical
+        # observable from the final GRU hidden state.  The shared GRU receives
+        # gradient from all k heads simultaneously, giving it the same learning
+        # signal as the single-head BB-2 baseline while still allowing
+        # per-observable specialisation in the output layers.
         from bb_args import BB_CODE_PARAMS
         k = BB_CODE_PARAMS[args.code_size]["k"]
         self.rnn = nn.GRU(args.embedding_features[-1], args.hidden_size,
                           num_layers=args.n_gru_layers, batch_first=True)
-        self.decoders = nn.ModuleList([nn.Linear(args.hidden_size, 1) for _ in range(k)])
+        dec_hidden = args.decoder_hidden_size or (args.hidden_size // 4)
+        self.decoders = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(args.hidden_size, dec_hidden),
+                nn.ReLU(),
+                nn.Linear(dec_hidden, 1),
+            )
+            for _ in range(k)
+        ])
 
     # ------------------------------------------------------------------
     # Forward
@@ -84,36 +92,27 @@ class BBGRUDecoder(nn.Module):
         Returns final_prediction of shape [B, k] (raw logits).
 
         B must be passed explicitly so that trivial shots (no active detectors
-        in any round) are handled correctly: their logit is hard-coded to 0
-        (→ predicted class 0 for all k observables) without flowing through
-        the GRU/decoder.
+        in any round) are handled correctly: they receive a sequence of
+        empty_embedding vectors through the GRU so the model can learn the
+        correct prediction for the trivial syndrome.
         """
         k = len(self.decoders)
+        g_max = self.args.t - self.args.dt + 2
 
-        # All shots in the batch are trivial — nothing to embed.
         if x.shape[0] == 0:
-            return torch.zeros(B, k, device=self.decoders[0].weight.device)
-
-        bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
-        g_max = int(label_map[:, 1].max().item()) + 1
-        bulk  = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+            # Entire batch is trivial — no GNN pass needed; build all-empty sequence.
+            bulk = self.empty_embedding.view(1, 1, -1).expand(B, g_max, -1).contiguous()
+        else:
+            bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
+            bulk = group(bulk_emb, label_map, B, g_max, self.empty_embedding)
         # bulk: [B, g_max, embed_dim]
+        # Shots absent from label_map (trivial) are filled with empty_embedding by group().
 
         h_final = self.rnn(bulk)[1][-1]   # [B, hidden_size]
         logits = torch.cat(
             [dec(h_final) for dec in self.decoders],
             dim=1,
         )  # [B, k]
-
-        # Zero logits for any shots that had no active detectors at all.
-        # These shots don't appear in label_map[:, 0], so we detect them by
-        # comparing the set of active batch indices against the full range.
-        active = label_map[:, 0].unique()
-        if active.shape[0] < B:
-            trivial = torch.ones(B, dtype=torch.bool, device=logits.device)
-            trivial[active] = False
-            logits = logits.clone()
-            logits[trivial] = 0.0   # sigmoid(0) > 0.5 is False → pred = 0
 
         return logits
 

@@ -40,9 +40,10 @@ class BBArgs:
     auto_batch_size: bool = True
 
     # Model
-    embedding_features: list = field(default_factory=lambda: [3, 64, 256])
+    embedding_features: list = field(default_factory=lambda: [4, 64, 256])
     hidden_size: int = 256
-    n_gru_layers: int = 2
+    n_gru_layers: int = 4
+    decoder_hidden_size: int | None = None  # MLP head intermediate dim; None → hidden_size // 4
 
     # Logging
     log_wandb: bool = False

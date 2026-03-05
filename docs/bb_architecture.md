@@ -41,13 +41,19 @@ With `z_basis=True, use_both=True` (implemented in `src/bb_codes/build_circuit.p
 - Rounds 1..t-1: n/2 Z-check + n/2 X-check firings
 - Round t (virtual): n/2 "perfect final Z syndromes" from data qubit measurement
 
-Total GRU sequence length: `g_max = t + 1`.
+### Sliding window
 
-### Node features: [type, coord_x, coord_y]
+Each detection event at syndrome round r is replicated into `dt` consecutive
+GRU chunks: chunk j = r − d for d ∈ {0, …, dt−1}, provided 0 ≤ j < g_max.
+This gives the GRU a local temporal context of dt rounds per step, identical
+to the surface code decoder. GRU sequence length: `g_max = t − dt + 2`.
+
+### Node features: [type, coord_x, coord_y, t_local_norm]
 
 - `type`: 0 for Z-check, 1 for X-check
 - `coord_x = (i // m − (l−1)/2) / ((l−1)/2)` — normalized torus row
 - `coord_y = (i % m  − (m−1)/2) / ((m−1)/2)` — normalized torus column
+- `t_local_norm = d / max(dt − 1, 1)` — position within the sliding window, normalised to [0, 1]
 
 where i ∈ {0, …, n/2−1} for both Z- and X-checks (same torus position).
 
@@ -75,40 +81,42 @@ step (unlike surface codes where most edges are local).
 
 ## Model: BBGRUDecoder (`src/bb_gru_decoder.py`)
 
-Same backbone as `GRUDecoder` for surface codes, with two changes:
-
-1. **k-head decoder**: `nn.Linear(hidden_size, k)` instead of `nn.Linear(hidden_size, 1)`.
-   Outputs k raw logits, one per logical observable.
-
-2. **Loss**: `BCEWithLogitsLoss` on `[B, k]` tensor.
-
-3. **Accuracy**: fraction of shots where **all k** logical predictions are correct.
+Same backbone as `GRUDecoder` for surface codes, adapted for BB codes:
 
 ```
 Per-round sparse GNN
-  x ∈ R^{N × 3}  (active detectors, node features)
-  edge_index, edge_attr  (fully-connected within round, distance-based weights)
+  x ∈ R^{N × 4}  (active detectors, node features)
+  edge_index, edge_attr  (fully-connected within chunk, distance-based weights)
   → global_mean_pool
   → embedding ∈ R^{embed_dim}    (or empty_embedding if no active detectors)
 
-GRU
-  sequence: [embed_0, embed_1, ..., embed_{g_max-1}]  ∈ R^{g_max × embed_dim}
+GRU (n_gru_layers deep)
+  sequence: [embed_0, ..., embed_{g_max-1}]  ∈ R^{g_max × embed_dim}
   → final hidden state h ∈ R^{hidden_size}
 
-Decoder head
-  h → Linear(hidden_size, k) → logits ∈ R^k
+k MLP decoder heads (one per logical observable)
+  h → Linear(hidden_size, decoder_hidden) → ReLU → Linear(decoder_hidden, 1)
+  → logits ∈ R^k
   loss = BCEWithLogitsLoss(logits, labels)   labels ∈ {0,1}^k
 ```
+
+**Trivial shots** (no detectors in any round) receive a sequence of
+`empty_embedding` vectors through the GRU — the model learns the appropriate
+prediction for a trivial syndrome rather than hard-coding zero logits.
+
+**Accuracy**: fraction of shots where **all k** logical predictions are correct.
 
 ### Default hyperparameters (BBArgs)
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `embedding_features` | [3, 64, 256] | GNN layers: input_dim=3, output_dim=256 |
+| `embedding_features` | [4, 64, 256] | GNN layers: input_dim=4, output_dim=256 |
 | `hidden_size` | 256 | GRU hidden state size |
-| `n_gru_layers` | 2 | GRU depth |
+| `n_gru_layers` | 4 | GRU depth |
+| `decoder_hidden_size` | `hidden_size // 4` | MLP head intermediate dim |
 | `t` | code distance | Syndrome rounds at training time |
-| `batch_size` | 512 | |
+| `dt` | 2 | Sliding window size |
+| `batch_size` | 2048 | |
 | `n_batches` | 256 | Batches per epoch |
 | `lr` | 1e-3 | Initial learning rate |
 | `min_lr` | 1e-4 | LR floor (exponential decay 0.95/epoch) |
@@ -118,11 +126,16 @@ Decoder head
 ## Training (`scripts/train_bb.py`)
 
 ```bash
-python scripts/train_bb.py --code_size 72 --t 6 --p 0.001 --epochs 600
-python scripts/train_bb.py --code_size 144 --t 12 --p 0.001 --epochs 600 --wandb
+python scripts/train_bb.py --code_size 72 --t 6 --p 0.001 --epochs 1000
+# Multi-p training:
+python scripts/train_bb.py --code_size 72 --t 6 --p 0.001 --p_list 0.001 0.002 0.003 --epochs 1000 --wandb
 # Resume from checkpoint:
 python scripts/train_bb.py --code_size 72 --load <model_name>
+# With evaluation at the end (adaptive sampling, up to 10M shots per p):
+python scripts/train_bb.py --code_size 72 --t 6 --p_list 0.001 0.002 0.003 --epochs 1000 --test
 ```
+
+Test results are saved to `models/<name>.pt` (under `"test_results"`) and `logs/<name>.json`.
 
 ---
 
