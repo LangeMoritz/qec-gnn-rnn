@@ -141,30 +141,47 @@ sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003
 
 ---
 
-## Exp BB-4: MLP heads + 4 GRU layers + multi-p training
+## Exp BB-4: 4 GRU layers + multi-p training
 
-**Status**: RUNNING — job 6048009
+**Status**: DONE — final model: `bb72_t6_p0_001_260305_095508`
 
 **Goal**: Improve over BB-3 with:
-1. **MLP decoder heads**: `Linear(1024, 256) → ReLU → Linear(256, 1)` per observable,
-   replacing the single linear projection. Gives each observable nonlinear feature
-   extraction from the shared GRU state.
-2. **4 GRU layers** (up from 2): deeper temporal processing.
-3. **Trivial shots through GRU**: shots with no active detectors now receive an
+1. **4 GRU layers** (up from 2): deeper temporal processing.
+2. **Trivial shots through GRU**: shots with no active detectors now receive an
    all-`empty_embedding` sequence through the GRU instead of hard-coded zero logits.
-4. **--test** at end of training: adaptive-sampling evaluation at all training p values
+3. **--test** at end of training: adaptive-sampling evaluation at all training p values
    (target 1% rel_std, up to 10M shots per p).
+
+Note: MLP decoder heads were planned but not implemented (`decoder_hidden=None`).
 
 **Setup**:
 - Code: [[72, 12, 6]], t=6, dt=2, g_max=6
 - embedding_features = [4, 64, 128, 256, 512, 1024], hidden_size = 1024
-- n_gru_layers = 4, decoder_hidden = 256 (= hidden // 4)
+- n_gru_layers = 4, decoder_hidden = None (linear head)
 - p_list = [0.001, 0.002, 0.003], n_epochs = 1000 (fresh start), n_batches = 256
 - wandb project: `GNN-RNN-BB-codes`
 
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test   # job 6048009
+sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test   # job 6048009 → bb72_t6_p0_001_260305_095508
+```
+
+---
+
+## Exp BB-4 cont: BB-4 continued training (3000 epochs, lr=1e-3)
+
+**Status**: RUNNING — job TBD
+
+**Goal**: Continue BB-4 for 3000 more epochs with a warm-restart LR (1e-3) to allow further convergence. BB-4 ran 1000 epochs from scratch and was still improving.
+
+**Setup**:
+- Same architecture as BB-4 (hidden=1024, embed=[4,64,128,256,512,1024], n_gru_layers=4, dt=2)
+- Load: `bb72_t6_p0_001_260305_095508`
+- p_list = [0.001, 0.002, 0.003], n_epochs = 3000, lr = 1e-3 (warm restart)
+
+**Commands**:
+```bash
+sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes bb72_t6_p0_001_260305_095508 "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test
 ```
 
 ---
