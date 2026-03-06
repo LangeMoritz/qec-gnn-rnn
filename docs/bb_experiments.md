@@ -170,7 +170,7 @@ sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003
 
 ## Exp BB-4 cont: BB-4 continued training (3000 epochs, lr=1e-3)
 
-**Status**: RUNNING — job TBD
+**Status**: RUNNING — job 6064042
 
 **Goal**: Continue BB-4 for 3000 more epochs with a warm-restart LR (1e-3) to allow further convergence. BB-4 ran 1000 epochs from scratch and was still improving.
 
