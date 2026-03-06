@@ -926,6 +926,161 @@ class ThreeByThreeHierarchicalBatchPrefetcher:
             self._thread.join(timeout=5)
 
 
+class ThreeLevelHierarchicalDataset(TwoLevelHierarchicalDataset):
+    """Splits a d=17 circuit into 4×4×4 = 64 leaf d=3 patches.
+
+    Hierarchy:
+      Level 3: d=17 → 4 d=9 outer patches  (HierarchicalDataset._setup_patches)
+      Level 2: each d=9 → 4 d=5 sub-patches (TwoLevelHierarchicalDataset._setup_sub_patches)
+      Level 1: each d=5 → 4 d=3 leaf patches (new _setup_sub_sub_patches)
+
+    generate_batch() returns patch_batches as list[4] of list[4] of list[4] of 5-tuples,
+    outer order [TL, TR, BL, BR] at all three levels.
+    """
+
+    def __init__(self, args: Args):
+        super().__init__(args)   # builds d=17 circuit + 4×4 two-level patches
+        self._setup_sub_sub_patches()
+
+    def _setup_sub_sub_patches(self):
+        """For each of 4×4 d=5 sub-patches, build 4 leaf d=3 sub-sub-patches."""
+        self.sub_sub_patch_local_indices = []   # [4][4][4]
+        self.sub_sub_patch_coords        = []   # [4][4][4] translated int64 coords
+        self.sub_sub_patch_pos_idx       = []   # [4][4][4] pos_idx arrays
+        self.sub_sub_patch_edge_weights  = []   # [4][4][4] float32 weight matrices
+        self.sub_sub_patch_local_pairs   = []   # [4][4][4] local-pairs caches (dicts)
+        self.leaf_global_indices         = []   # [4][4][4] global det indices into full syndrome
+
+        for i_outer in range(4):
+            lo_o, co_o, pi_o, ew_o, lp_o, gi_o = [], [], [], [], [], []
+            for i_inner in range(4):
+                inner_coords = self.sub_patch_coords[i_outer][i_inner]  # [n, 3] origin-translated
+                ox, oy = inner_coords[:, 0], inner_coords[:, 1]
+                ox_mid = (int(ox.min()) + int(ox.max())) / 2
+                oy_mid = (int(oy.min()) + int(oy.max())) / 2
+
+                leaf_masks = [
+                    (ox <= ox_mid + 1) & (oy <= oy_mid + 1),  # TL
+                    (ox >= ox_mid - 1) & (oy <= oy_mid + 1),  # TR
+                    (ox <= ox_mid + 1) & (oy >= oy_mid - 1),  # BL
+                    (ox >= ox_mid - 1) & (oy >= oy_mid - 1),  # BR
+                ]
+
+                lo_i, co_i, pi_i, ew_i, lp_i, gi_i = [], [], [], [], [], []
+                # Pre-compute global indices for efficient syndrome slicing
+                inner_global = self.patch_indices[i_outer][
+                    self.sub_patch_local_indices[i_outer][i_inner]
+                ]
+                for mask in leaf_masks:
+                    leaf_local = np.where(mask)[0]
+                    lc = inner_coords[leaf_local].copy()
+                    lc[:, :2] -= lc[:, :2].min(axis=0)
+                    pos_idx, ew = self._build_edge_weights(lc)
+                    lo_i.append(leaf_local)
+                    co_i.append(lc)
+                    pi_i.append(pos_idx)
+                    ew_i.append(ew)
+                    lp_i.append({})
+                    gi_i.append(inner_global[leaf_local])
+
+                lo_o.append(lo_i); co_o.append(co_i); pi_o.append(pi_i)
+                ew_o.append(ew_i); lp_o.append(lp_i); gi_o.append(gi_i)
+
+            self.sub_sub_patch_local_indices.append(lo_o)
+            self.sub_sub_patch_coords.append(co_o)
+            self.sub_sub_patch_pos_idx.append(pi_o)
+            self.sub_sub_patch_edge_weights.append(ew_o)
+            self.sub_sub_patch_local_pairs.append(lp_o)
+            self.leaf_global_indices.append(gi_o)
+
+    def generate_batch(self):
+        """Sample from the d=17 circuit and return 4×4×4 nested patch sub-batches.
+
+        Returns:
+            patch_batches: list[4] of list[4] of list[4] of (x, edge_index, labels, label_map, edge_attr)
+                           outer/inner/leaf order [TL, TR, BL, BR]
+            last_label:    [B, 1] float32 tensor
+            g_max:         number of time chunks per sample
+        """
+        full = self._full
+        n_p = len(full.samplers)
+        if n_p == 1:
+            syndromes, label_data = full._sample_n(0, full.batch_size)
+        else:
+            per_p = full.batch_size // n_p
+            remainder = full.batch_size - per_p * n_p
+            counts = [per_p + (1 if i < remainder else 0) for i in range(n_p)]
+            parts_s, parts_l = zip(*[full._sample_n(i, counts[i]) for i in range(n_p)])
+            syndromes = np.concatenate(parts_s)
+            label_data = np.concatenate(parts_l)
+        last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=full.device)
+        sampler_t = full._sampler_t[0]
+
+        def _build_leaf(task):
+            i_outer, i_inner, i_leaf = task
+            leaf_syn = syndromes[:, self.leaf_global_indices[i_outer][i_inner][i_leaf]]
+            return self._build_patch_batch(
+                leaf_syn,
+                self.sub_sub_patch_coords[i_outer][i_inner][i_leaf],
+                self.sub_sub_patch_pos_idx[i_outer][i_inner][i_leaf],
+                self.sub_sub_patch_edge_weights[i_outer][i_inner][i_leaf],
+                self.sub_sub_patch_local_pairs[i_outer][i_inner][i_leaf],
+                sampler_t,
+            )
+
+        tasks = [(io, ii, il) for io in range(4) for ii in range(4) for il in range(4)]
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            results = list(executor.map(_build_leaf, tasks))
+
+        patch_batches = [[[None] * 4 for _ in range(4)] for _ in range(4)]
+        for (io, ii, il), tup in zip(tasks, results):
+            patch_batches[io][ii][il] = tup
+
+        g_max = sampler_t - full.dt + 2
+        return patch_batches, last_label, g_max
+
+
+class ThreeLevelHierarchicalBatchPrefetcher:
+    """Like HierarchicalBatchPrefetcher but for ThreeLevelHierarchicalDataset."""
+
+    def __init__(self, args: Args, queue_size: int = 2):
+        self.dataset = ThreeLevelHierarchicalDataset(args)
+        self.queue: Queue = Queue(maxsize=queue_size)
+        self._stop = Event()
+        self._thread: Thread | None = None
+
+    def start(self, n_batches: int):
+        self._stop.clear()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        self._thread = Thread(target=self._fill, args=(n_batches,), daemon=True)
+        self._thread.start()
+
+    def _fill(self, n_batches: int):
+        for _ in range(n_batches):
+            if self._stop.is_set():
+                break
+            self.queue.put(self.dataset.generate_batch())
+        self.queue.put(None)  # sentinel
+
+    def __iter__(self):
+        while (batch := self.queue.get()) is not None:
+            yield batch
+
+    def stop(self):
+        self._stop.set()
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
 def find_optimal_batch_size(args: Args, model, candidates=None):
     """Warmup: try batch sizes, measure throughput, pick best.
 

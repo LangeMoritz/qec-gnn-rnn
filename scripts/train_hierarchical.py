@@ -22,6 +22,7 @@ from args import Args
 from gru_decoder import GRUDecoder
 from data import (HierarchicalDataset, HierarchicalBatchPrefetcher,
                   TwoLevelHierarchicalDataset, TwoLevelHierarchicalBatchPrefetcher,
+                  ThreeLevelHierarchicalDataset, ThreeLevelHierarchicalBatchPrefetcher,
                   ThreeByThreeHierarchicalDataset, ThreeByThreeHierarchicalBatchPrefetcher,
                   find_optimal_batch_size_hierarchical)
 from hierarchical_decoder import MetaGRUDecoder, MetaGRUDecoder3x3
@@ -122,63 +123,52 @@ if __name__ == "__main__":
                         help='Max shots per (p, t) for adaptive testing')
     cli = parser.parse_args()
 
-    # ── Load base model (auto-detect type) ──
-    ckpt = torch.load(f"./models/{cli.base_model}.pt", weights_only=False)
     device = torch.device(
         "mps" if torch.backends.mps.is_available() else
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    if "meta_hidden" in ckpt:
-        # Checkpoint is a MetaGRUDecoder (d=5 level) — build two-level d=9 model
-        print(f"Detected MetaGRUDecoder base checkpoint: {cli.base_model}")
-        d3_name = ckpt["base_model_name"]
-        d3_ckpt = torch.load(f"./models/{d3_name}.pt", weights_only=False)
-        d3_args_dict = d3_ckpt["args"]
-        d3_args = Args(
-            distance=d3_args_dict["distance"],
-            error_rate=d3_args_dict["error_rate"],
-            t=cli.t,
-            dt=cli.dt,
-            embedding_features=d3_args_dict["embedding_features"],
-            hidden_size=d3_args_dict["hidden_size"],
-            n_gru_layers=d3_args_dict["n_gru_layers"],
-        )
-        d3_args.device = device
-        d3_model = GRUDecoder(d3_args).to(device)
-        d3_model.load_state_dict(d3_ckpt["state_dict"])
-        base_model = MetaGRUDecoder(
-            d3_model,
-            meta_hidden=ckpt["meta_hidden"],
-            n_meta_layers=ckpt["n_meta_layers"],
-            trainable_base=False,   # trainability at d=5 level controlled below
-            warm_start_rnn=False,   # already trained, don't overwrite
-        ).to(device)
-        base_model.load_state_dict(ckpt["state_dict"])
-        print(f"Loaded d=5 MetaGRUDecoder: {cli.base_model} (d=3 base: {d3_name})")
-        base_is_meta = True
-    else:
-        # Checkpoint is a GRUDecoder (d=3 level)
-        base_args_dict = ckpt["args"]
-        base_args = Args(
-            distance=base_args_dict["distance"],
-            error_rate=base_args_dict["error_rate"],
-            t=cli.t,
-            dt=cli.dt,
-            embedding_features=base_args_dict["embedding_features"],
-            hidden_size=base_args_dict["hidden_size"],
-            n_gru_layers=base_args_dict["n_gru_layers"],
-        )
-        base_args.device = device
-        base_model = GRUDecoder(base_args).to(device)
-        if cli.random_base:
-            print(f"Using randomly-initialised base GNN (architecture from: {cli.base_model})")
+    def _load_base_model(name):
+        """Recursively load GRUDecoder or MetaGRUDecoder from checkpoint."""
+        ckpt = torch.load(f"./models/{name}.pt", weights_only=False, map_location=device)
+        if "meta_hidden" in ckpt:
+            sub_name = ckpt["base_model_name"]
+            sub_model = _load_base_model(sub_name)
+            sub_model.eval()
+            model = MetaGRUDecoder(
+                sub_model,
+                meta_hidden=ckpt["meta_hidden"],
+                n_meta_layers=ckpt["n_meta_layers"],
+                trainable_base=False,   # trainability at this level controlled below
+                warm_start_rnn=False,   # already trained, don't overwrite
+            ).to(device)
+            model.load_state_dict(ckpt["state_dict"])
+            print(f"  Loaded MetaGRUDecoder: {name} (base: {sub_name})")
+            return model
         else:
-            base_model.load_state_dict(ckpt["state_dict"])
-            print(f"Loaded base GRUDecoder: {cli.base_model} (d={base_args_dict['distance']})")
-        base_is_meta = False
+            d = ckpt["args"]
+            args = Args(
+                distance=d["distance"],
+                error_rate=d["error_rate"],
+                t=cli.t,
+                dt=cli.dt,
+                embedding_features=d["embedding_features"],
+                hidden_size=d["hidden_size"],
+                n_gru_layers=d["n_gru_layers"],
+            )
+            args.device = device
+            model = GRUDecoder(args).to(device)
+            if cli.random_base:
+                print(f"  Using randomly-initialised GRUDecoder (arch from: {name})")
+            else:
+                model.load_state_dict(ckpt["state_dict"])
+                print(f"  Loaded GRUDecoder: {name} (d={d['distance']})")
+            return model
 
+    print(f"Loading base model: {cli.base_model}")
+    base_model = _load_base_model(cli.base_model)
     base_model.eval()
+    base_is_meta = isinstance(base_model, MetaGRUDecoder)
 
     # ── Args for target d=2k-1 circuit ──
     args = Args(
@@ -193,8 +183,12 @@ if __name__ == "__main__":
     )
     args.device = device
 
-    # Select dataset / prefetcher class based on base model type
-    if base_is_meta:
+    # Select dataset / prefetcher class based on base model type and target distance
+    if base_is_meta and cli.d == 17:
+        DatasetCls    = ThreeLevelHierarchicalDataset
+        PrefetcherCls = ThreeLevelHierarchicalBatchPrefetcher
+        base_is_3x3   = False
+    elif base_is_meta:
         DatasetCls    = TwoLevelHierarchicalDataset
         PrefetcherCls = TwoLevelHierarchicalBatchPrefetcher
         base_is_3x3   = False
@@ -210,7 +204,14 @@ if __name__ == "__main__":
     # Print patch geometry info
     _ds = DatasetCls(args)
     print(f"{DatasetCls.__name__}: d={cli.d}, g_max={_ds._full._sampler_t[0] - cli.dt + 2}")
-    if base_is_meta:
+    if isinstance(_ds, ThreeLevelHierarchicalDataset):
+        for io in range(4):
+            print(f"  outer {['TL','TR','BL','BR'][io]}: {len(_ds.patch_indices[io])} detectors")
+            for ii in range(4):
+                print(f"    inner {['TL','TR','BL','BR'][ii]}: {len(_ds.sub_patch_local_indices[io][ii])} sub-detectors")
+                for il in range(4):
+                    print(f"      leaf {['TL','TR','BL','BR'][il]}: {len(_ds.sub_sub_patch_local_indices[io][ii][il])} leaf-detectors")
+    elif base_is_meta:
         for i_outer in range(4):
             n_outer = len(_ds.patch_indices[i_outer])
             print(f"  outer {['TL','TR','BL','BR'][i_outer]}: {n_outer} detectors")
