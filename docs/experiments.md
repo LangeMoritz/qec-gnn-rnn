@@ -1004,7 +1004,7 @@ _(pending — job 6063931)_
 
 | SLURM job | Note |
 |-----------|------|
-| TBD | `lr1e-4_cont2` |
+| 6064033 | `lr1e-4_cont2` |
 
 ### Commands
 
@@ -1014,4 +1014,4 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 12
 
 ### Results
 
-_(pending)_
+_(pending — job 6064033)_
