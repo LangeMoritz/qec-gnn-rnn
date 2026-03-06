@@ -957,15 +957,19 @@ _(pending — job 6059179 in progress)_
 ### Commands
 
 ```bash
+# Original (cancelled — upfront MWPM was too slow for d=17):
 sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 4096 128 1000 first_d17 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+# Resubmit (skip upfront MWPM baseline; MWPM still computed per-(p,t) in test loop):
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 4096 128 1000 first_d17 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size skip_mwpm_baseline
 ```
 
 ### Runs
 
 | SLURM job | Note |
 |-----------|------|
-| 6060984 | `first_d17` |
+| 6060984 | `first_d17` (cancelled — upfront MWPM too slow) |
+| TBD | `first_d17` resubmit (skip_mwpm_baseline) |
 
 ### Results
 
-_(pending — job 6060984)_
+_(pending — resubmit)_

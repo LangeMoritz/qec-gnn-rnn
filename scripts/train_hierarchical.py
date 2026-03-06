@@ -121,6 +121,8 @@ if __name__ == "__main__":
                         help='Round counts to test (default: 5 10 20 50 100 200)')
     parser.add_argument('--test_shots', type=int, default=1_000_000,
                         help='Max shots per (p, t) for adaptive testing')
+    parser.add_argument('--skip_mwpm_baseline', action='store_true',
+                        help='Skip upfront MWPM baseline computation (saves time for large d)')
     cli = parser.parse_args()
 
     device = torch.device(
@@ -312,8 +314,9 @@ if __name__ == "__main__":
 
     # Compute MWPM baseline once as a reference line (full d circuit).
     # Skipped for test-only runs (n_epochs == 0) — MWPM is computed per-(p,t) in the test loop.
+    # Skipped when --skip_mwpm_baseline is set (useful for large d where this is very slow).
     error_rates = args.error_rates if args.error_rates else [args.error_rate]
-    if cli.n_epochs > 0:
+    if cli.n_epochs > 0 and not cli.skip_mwpm_baseline:
         max_shots = 10_000_000
         target_rel_std = 0.01
         mwpm_p_ls = []
