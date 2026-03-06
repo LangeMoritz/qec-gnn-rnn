@@ -968,8 +968,8 @@ sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr
 | SLURM job | Note |
 |-----------|------|
 | 6060984 | `first_d17` (cancelled — upfront MWPM too slow) |
-| TBD | `first_d17` resubmit (skip_mwpm_baseline) |
+| 6063931 | `first_d17` resubmit (skip_mwpm_baseline) |
 
 ### Results
 
-_(pending — resubmit)_
+_(pending — job 6063931)_
