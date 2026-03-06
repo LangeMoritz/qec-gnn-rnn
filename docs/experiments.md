@@ -24,6 +24,7 @@
 | [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
+| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress |
 
 ---
 
@@ -768,7 +769,30 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 
 Steady convergence; gap to MWPM shrinking at ~0.01%/step at min LR. Started from prior d=9 checkpoint (acc 87.76%) — not a cold start. On track to cross MWPM with sufficient epochs.
 
-**Preliminary test** (job 6059180): test-only run (0 epochs) on the Exp 13B checkpoint (`iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9`, acc ≈ 87.76%) to get baseline numbers while Exp 16 training continues. Results pending.
+**Preliminary test** (job 6059180): test-only run (0 epochs) on the Exp 13B checkpoint (`iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9`) to get baseline numbers while Exp 16 training continues.
+
+**Preliminary test results** (p=0.001–0.005, t=5–200, ~1M shots; plot: `results/exp16_prelim_d9_test.pdf`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 |
+|--------|---|----|----|-----|------|------|
+| 0.001 | n/a* | n/a* | **0.29** | **0.70** | **0.48** | **0.40** |
+| 0.002 | **0.95** | **0.54** | **0.59** | **0.48** | **0.51** | **0.57** |
+| 0.003 | 1.04 | **0.83** | **0.72** | **0.68** | **0.63** | **0.79** |
+| 0.004 | 1.32 | 1.02 | **0.89** | **0.83** | **0.85** | 1.02 |
+| 0.005 | 1.42 | 1.22 | 1.04 | 1.02 | 1.02 | 1.29 |
+
+\* p=0.001, t=5/10: MWPM got 0 errors in 1M shots — shot-noise limited, ratio undefined.
+
+Key observations:
+- **p=0.001**: Strongly beats MWPM at t≥20 (best: −60% at t=20,200). t=5/10 shot-noise limited.
+- **p=0.002**: Beats MWPM at all t (40–54% improvement), best result.
+- **p=0.003**: Beats MWPM at t≥10 (17–37%); tied at t=5.
+- **p=0.004**: Beats MWPM at t=20–100; tied at t=10, slightly worse at t=200.
+- **p=0.005**: Roughly tied at t=20–100; worse at t=5,10,200.
+- **Short-t deficit at p≥0.004**: same pattern as d=5/d=7 — high-p regime not fully learned.
+- This is the Exp 13B checkpoint (not yet converged at training time); Exp 16 continued training expected to improve especially at high p.
 
 ---
 
@@ -896,3 +920,46 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 12
 ### Results
 
 _(pending — job 6059179 in progress)_
+
+---
+
+## Experiment 19: d=17 first run (from Exp 13B d=9 base)
+
+**Goal**: First d=17 hierarchical decoder run using the new `ThreeLevelHierarchicalDataset` (4×4×4 = 64 leaf d=3 patches) and three-level stacked `MetaGRUDecoder`. Base model is the Exp 13B d=9 checkpoint (`iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9`). Settings match Exp 16 exactly — same effective LR regime (lr=1e-3, batch=4096) — to enable direct comparison across distances.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### New features (this experiment)
+
+- `ThreeLevelHierarchicalDataset` in `src/data.py`: splits d=17 → 4 d=9 outer patches → 4×4 d=5 inner patches → 4×4×4 d=3 leaf patches; returns `list[4][4][4]` of 5-tuples
+- `ThreeLevelHierarchicalBatchPrefetcher`: background-threaded prefetcher for the above
+- Recursive `_load_base_model()` in `train_hierarchical.py`: handles arbitrary nesting depth (d=3 → d=5 → d=9 → d=17); replaces the old two-branch loading block
+- Dataset selection: `d==17 and base_is_meta` → `ThreeLevelHierarchicalDataset`
+- `MetaGRUDecoder.embed_chunks()` already handles 3-level nesting via recursive `_embed_patch()` calls — no changes needed
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` (Exp 13B) |
+| Distance | 17 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12/15/16) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 4×4×4 (three-level 2×2) |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 4096 128 1000 first_d17 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+```
+
+### Results
+
+_(pending)_
