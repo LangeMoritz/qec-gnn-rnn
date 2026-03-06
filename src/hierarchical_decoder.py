@@ -66,8 +66,6 @@ class MetaGRUDecoder(nn.Module):
         )
         self.meta_rnn = nn.GRU(meta_hidden, meta_hidden, num_layers=n_meta_layers, batch_first=True)
         self.meta_decoder = nn.Sequential(
-            nn.Linear(meta_hidden, meta_hidden),
-            nn.ReLU(),
             nn.Linear(meta_hidden, 1),
             nn.Sigmoid(),
         )
@@ -223,8 +221,6 @@ class MetaGRUDecoder3x3(nn.Module):
         )
         self.meta_rnn = nn.GRU(meta_hidden, meta_hidden, num_layers=n_meta_layers, batch_first=True)
         self.meta_decoder = nn.Sequential(
-            nn.Linear(meta_hidden, meta_hidden),
-            nn.ReLU(),
             nn.Linear(meta_hidden, 1),
             nn.Sigmoid(),
         )
