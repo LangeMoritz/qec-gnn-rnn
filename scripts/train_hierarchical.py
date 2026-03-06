@@ -237,6 +237,15 @@ if __name__ == "__main__":
     n_frozen = sum(p.numel() for p in meta_model.parameters() if not p.requires_grad)
     print(f"{MetaModelCls.__name__}: {n_trainable:,} trainable params, {n_frozen:,} frozen params")
 
+    date = datetime.now().strftime("%y%m%d")
+    run_id = os.environ.get("SLURM_JOB_ID", "") or datetime.now().strftime("%H%M%S")
+    model_name = f"iterative_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
+    if cli.note:
+        model_name += f"_{cli.note}"
+
+    load_history = []
+    prior_history = []
+    loaded_from = None
     if cli.load_path:
         meta_ckpt = torch.load(f"./models/{cli.load_path}.pt", weights_only=False, map_location=device)
         raw = getattr(meta_model, '_orig_mod', meta_model)
@@ -244,17 +253,23 @@ if __name__ == "__main__":
         if missing or unexpected:
             print(f"  [partial load] missing keys: {missing}")
             print(f"  [partial load] unexpected keys: {unexpected}")
-        print(f"Loaded meta-model: {cli.load_path}")
-        model_name = cli.load_path
-    else:
-        date = datetime.now().strftime("%y%m%d")
-        run_id = os.environ.get("SLURM_JOB_ID", "") or datetime.now().strftime("%H%M%S")
-        model_name = f"iterative_d{cli.d}_p{cli.p}_t{cli.t}_dt{cli.dt}_{date}_{run_id}"
-        if cli.note:
-            model_name += f"_{cli.note}"
+        load_history = meta_ckpt.get("load_history", []) + [cli.load_path]
+        prior_history = meta_ckpt.get("history", [])
+        loaded_from = cli.load_path
+        parent_run_id = meta_ckpt.get("slurm_job_id") or meta_ckpt.get("run_id", "")
+        if not parent_run_id:
+            parts = cli.load_path.split("_")
+            for i, part in enumerate(parts):
+                if len(part) == 6 and part.isdigit() and i + 1 < len(parts):
+                    parent_run_id = parts[i + 1]
+                    break
+            if not parent_run_id:
+                parent_run_id = parts[-1]
+        model_name += f"_load_{parent_run_id}"
+        print(f"Loaded meta-model: {cli.load_path} (parent run_id={parent_run_id})")
 
     mwpm_accuracy = None
-    if cli.wandb:
+    if cli.wandb and cli.n_epochs > 0:
         wandb.init(
             project=cli.wandb_project,
             name=model_name,
@@ -270,56 +285,59 @@ if __name__ == "__main__":
             },
         )
 
-    # ── Auto batch size (before torch.compile) ──
-    if cli.auto_batch_size and device.type == 'cuda':
-        optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model, DatasetCls=DatasetCls)
-        args.n_batches = max(1, args.n_batches * args.batch_size // optimal_bs)
-        args.batch_size = optimal_bs
-        cli.batch_size = optimal_bs
-        cli.n_batches = args.n_batches
-        print(f"Using batch_size={args.batch_size}, n_batches={args.n_batches}")
-        if cli.wandb:
-            wandb.config.update(
-                {"batch_size": args.batch_size, "n_batches": args.n_batches},
-                allow_val_change=True,
-            )
+    if cli.n_epochs > 0:
+        # ── Auto batch size (before torch.compile) ──
+        if cli.auto_batch_size and device.type == 'cuda':
+            optimal_bs = find_optimal_batch_size_hierarchical(args, meta_model, DatasetCls=DatasetCls)
+            args.n_batches = max(1, args.n_batches * args.batch_size // optimal_bs)
+            args.batch_size = optimal_bs
+            cli.batch_size = optimal_bs
+            cli.n_batches = args.n_batches
+            print(f"Using batch_size={args.batch_size}, n_batches={args.n_batches}")
+            if cli.wandb:
+                wandb.config.update(
+                    {"batch_size": args.batch_size, "n_batches": args.n_batches},
+                    allow_val_change=True,
+                )
 
-    # ── Optimizer ──
-    optim = torch.optim.Adam(
-        [p for p in meta_model.parameters() if p.requires_grad], lr=cli.lr
-    )
-    print(f"Optimizer: single LR {cli.lr} ({n_trainable:,} trainable params)")
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
-    )
+        # ── Optimizer ──
+        optim = torch.optim.Adam(
+            [p for p in meta_model.parameters() if p.requires_grad], lr=cli.lr
+        )
+        print(f"Optimizer: single LR {cli.lr} ({n_trainable:,} trainable params)")
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optim, lr_lambda=lambda ep: max(0.95 ** ep, 0.1)
+        )
 
     # Compute MWPM baseline once as a reference line (full d circuit).
+    # Skipped for test-only runs (n_epochs == 0) — MWPM is computed per-(p,t) in the test loop.
     error_rates = args.error_rates if args.error_rates else [args.error_rate]
-    max_shots = 10_000_000
-    target_rel_std = 0.01
-    mwpm_p_ls = []
-    for er in error_rates:
-        mwpm_args = deepcopy(args)
-        mwpm_args.error_rates = None
-        mwpm_args.error_rate = er
-        mwpm_ds = DatasetCls(mwpm_args)
-        dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
-        matcher = pymatching.Matching.from_detector_error_model(dem)
-        total_correct = total_shots = 0
-        while total_shots < max_shots:
-            det_events, flips = mwpm_ds._full.sample_syndromes(0)
-            preds = matcher.decode_batch(det_events)
-            total_correct += int(np.sum(preds == flips))
-            total_shots += args.batch_size
-            p_l = 1 - total_correct / total_shots
-            if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
-                break
-        std = np.sqrt(p_l * (1 - p_l) / total_shots)
-        print(f"MWPM baseline p={er}: P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
-        mwpm_p_ls.append(p_l)
-        del mwpm_ds, matcher
-    mwpm_accuracy = 1 - float(np.mean(mwpm_p_ls))
-    print(f"MWPM baseline avg accuracy={mwpm_accuracy:.6f}")
+    if cli.n_epochs > 0:
+        max_shots = 10_000_000
+        target_rel_std = 0.01
+        mwpm_p_ls = []
+        for er in error_rates:
+            mwpm_args = deepcopy(args)
+            mwpm_args.error_rates = None
+            mwpm_args.error_rate = er
+            mwpm_ds = DatasetCls(mwpm_args)
+            dem = mwpm_ds._full.circuits[0].detector_error_model(decompose_errors=True)
+            matcher = pymatching.Matching.from_detector_error_model(dem)
+            total_correct = total_shots = 0
+            while total_shots < max_shots:
+                det_events, flips = mwpm_ds._full.sample_syndromes(0)
+                preds = matcher.decode_batch(det_events)
+                total_correct += int(np.sum(preds == flips))
+                total_shots += args.batch_size
+                p_l = 1 - total_correct / total_shots
+                if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:
+                    break
+            std = np.sqrt(p_l * (1 - p_l) / total_shots)
+            print(f"MWPM baseline p={er}: P_L={p_l:.6f} +/- {std:.6f} ({total_shots} shots)")
+            mwpm_p_ls.append(p_l)
+            del mwpm_ds, matcher
+        mwpm_accuracy = 1 - float(np.mean(mwpm_p_ls))
+        print(f"MWPM baseline avg accuracy={mwpm_accuracy:.6f}")
 
     logger = TrainingLogger()
     logger.on_training_begin(args)
@@ -387,6 +405,9 @@ if __name__ == "__main__":
                 "random_base": cli.random_base,
                 "history": history,
                 "best_epoch": epoch,
+                "load_history": load_history,
+                "loaded_from": loaded_from,
+                "slurm_job_id": run_id,
             }
             if base_is_3x3:
                 ckpt_dict["grid_size"] = 3
@@ -395,10 +416,20 @@ if __name__ == "__main__":
     # ── Test ──
     test_results = {}
     if cli.test:
-        print("\nLoading best checkpoint for evaluation...")
         raw_meta = getattr(meta_model, '_orig_mod', meta_model)
-        best_ckpt = torch.load(f"./models/{model_name}.pt", weights_only=False)
-        raw_meta.load_state_dict(best_ckpt["state_dict"])
+        if cli.n_epochs > 0:
+            print("\nLoading best checkpoint for evaluation...")
+            best_ckpt = torch.load(f"./models/{model_name}.pt", weights_only=False)
+            raw_meta.load_state_dict(best_ckpt["state_dict"])
+        else:
+            print("\nTest-only run — evaluating loaded weights directly.")
+            best_ckpt = {"state_dict": raw_meta.state_dict(), "base_model_name": cli.base_model,
+                         "args": vars(args), "meta_hidden": cli.meta_hidden,
+                         "n_meta_layers": cli.n_meta_layers, "trainable_base": cli.trainable_base,
+                         "random_base": cli.random_base, "history": [], "best_epoch": 0,
+                         "load_history": load_history, "loaded_from": loaded_from, "slurm_job_id": run_id}
+            if base_is_3x3:
+                best_ckpt["grid_size"] = 3
         raw_meta.eval()
 
         error_rates = args.error_rates if args.error_rates else [args.error_rate]
