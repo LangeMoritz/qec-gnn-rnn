@@ -25,6 +25,7 @@
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 | [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress |
+| [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | in progress |
 
 ---
 
@@ -973,3 +974,44 @@ sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr
 ### Results
 
 _(pending — job 6063931)_
+
+---
+
+## Experiment 20: d=7 continued training (3000 epochs, lr=1e-4)
+
+**Goal**: Continue training the Exp 18 d=7 checkpoint for 3000 more epochs at the same lr=1e-4 to allow the model to converge further. Exp 18 ran for only 300 epochs; training was still improving at the end.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Load path | `iterative_d7_p0.001_t50_dt2_260306_6059179_ctrl_lr1e-4_cont_load_6039967` (Exp 18) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 3000 |
+| Learning rate | 1e-4 → 1e-5 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| TBD | `lr1e-4_cont2` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 3000 lr1e-4_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260306_6059179_ctrl_lr1e-4_cont_load_6039967 1e-4 no_auto_batch_size
+```
+
+### Results
+
+_(pending)_
