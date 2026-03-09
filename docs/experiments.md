@@ -1019,14 +1019,18 @@ _(pending — job 6063931)_
 
 | SLURM job | Note |
 |-----------|------|
-| 6064033 | `lr1e-4_cont2` |
+| 6064033 | `lr1e-4_cont2` — **cancelled** at epoch 2752/3000 (time limit approaching); best acc 97.73% |
+| 6079402 | `lr1e-5_cont3` — continuation, 1000 epochs, lr=1e-5→1e-6, extended test |
 
 ### Commands
 
 ```bash
+# Original (cancelled at epoch 2752):
 sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 3000 lr1e-4_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260306_6059179_ctrl_lr1e-4_cont_load_6039967 1e-4 no_auto_batch_size
+# Continuation (1000 epochs, lr=1e-5→1e-6, t=5–1000, 10M shots):
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 lr1e-5_cont3 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260306_6064033_lr1e-4_cont2_load_6059179 1e-5 no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
 ```
 
 ### Results
 
-_(pending — job 6064033)_
+_(pending — job 6079402)_
