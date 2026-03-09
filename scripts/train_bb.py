@@ -100,13 +100,15 @@ def main():
         auto_batch_size  = not cli.no_auto_batch,
     )
 
+    date = datetime.now().strftime("%y%m%d")
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    run_id = job_id if job_id else datetime.now().strftime("%H%M%S")
+
     # Auto-generate save name if not provided
     if cli.save:
         save_name = cli.save
     else:
-        ts = datetime.now().strftime("%y%m%d_%H%M%S")
-        p_str = f"p{cli.p}".replace(".", "_")
-        save_name = f"bb{cli.code_size}_t{t}_{p_str}_{ts}"
+        save_name = f"bb{cli.code_size}_t{t}_{date}_{run_id}"
 
     print(f"BB [[{cli.code_size},{params['k']},{params['d']}]] code")
     print(f"t={t}, p={cli.p}, device={args.device}, save={save_name}")
@@ -119,11 +121,28 @@ def main():
         path = f"./models/{cli.load}.pt"
         ckpt = torch.load(path, map_location=args.device, weights_only=False)
         model.load_state_dict(ckpt["state_dict"])
+        # Extract parent job/run ID for name lineage
+        parent_run_id = ckpt.get("slurm_job_id") or ckpt.get("run_id", "")
+        if not parent_run_id:
+            # Format: bb{n}_t{t}_{date}_{run_id}[_load_{...}]
+            parts = cli.load.split("_")
+            for i, part in enumerate(parts):
+                if len(part) == 6 and part.isdigit() and i + 1 < len(parts):
+                    parent_run_id = parts[i + 1]
+                    break
+            if not parent_run_id:
+                parent_run_id = parts[-1]
+        if not cli.save:
+            save_name = save_name + "_load_" + parent_run_id
         checkpoint_meta = {
             "prior_history": ckpt.get("history", []),
             "loaded_from":   cli.load,
+            "slurm_job_id":  parent_run_id,
         }
         print(f"Loaded {path}, resuming from epoch {len(checkpoint_meta['prior_history'])}")
+
+    if not cli.load:
+        checkpoint_meta["slurm_job_id"] = run_id
 
     logger = TrainingLogger()
     history = model.train_model(
@@ -179,9 +198,11 @@ def main():
 
         os.makedirs("./logs", exist_ok=True)
         log_path = f"./logs/{save_name}.json"
+        def _json_default(o):
+            return str(o)
         with open(log_path, "w") as f:
             json.dump({"model_name": save_name, "args": vars(args),
-                       "test_results": test_results}, f, indent=2)
+                       "test_results": test_results}, f, indent=2, default=_json_default)
         print(f"\nSaved: {log_path}")
 
 
