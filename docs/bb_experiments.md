@@ -186,7 +186,28 @@ sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes bb72_t6_p0_001_260305
 
 ---
 
-## Exp BB-5: Larger code [[144,12,12]]
+## Exp BB-5: MLP decoder heads, fresh start
+
+**Status**: RUNNING — job 6080043
+
+**Goal**: Add a hidden layer to each of the 12 decoder heads (Linear → MLP with one hidden layer),
+keeping all other BB-4 hyperparameters the same. Trained from scratch for 3000 epochs with --test.
+
+**Setup**:
+- Code: [[72, 12, 6]], t=6, dt=2, g_max=6
+- embedding_features = [4, 64, 128, 256, 512, 1024], hidden_size = 1024
+- n_gru_layers = 4, decoder_hidden = 256 (Linear(1024,256) + ReLU + Linear(256,1))
+- p_list = [0.001, 0.002, 0.003], n_epochs = 3000 (fresh start), n_batches = 128, batch = 4096
+- wandb project: `GNN-RNN-BB-codes`
+
+**Commands**:
+```bash
+sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256   # job 6080043
+```
+
+---
+
+## Exp BB-6: Larger code [[144,12,12]]
 
 **Status**: PLANNED
 
