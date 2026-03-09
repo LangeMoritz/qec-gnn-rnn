@@ -802,13 +802,13 @@ Key observations:
 | SLURM job | Note |
 |-----------|------|
 | 6038870 | `uniform_lr_d9_cont` — **crashed** (time limit, epoch 2179/3000) |
-| TBD | `uniform_lr_d9_cont2` — continuation, 500 epochs + test |
+| 6079238 | `uniform_lr_d9_cont2` — continuation, 500 epochs + test |
 
 ```bash
 sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 "" no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
 ```
 
-_(pending — continuation not yet submitted)_
+_(pending — job 6079238)_
 
 ---
 
