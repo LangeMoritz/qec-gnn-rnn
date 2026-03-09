@@ -21,7 +21,7 @@
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
 | [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
 | [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
-| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
+| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress (cont3 at lr=1e-4, job 6080257) |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 | [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress |
@@ -802,13 +802,17 @@ Key observations:
 | SLURM job | Note |
 |-----------|------|
 | 6038870 | `uniform_lr_d9_cont` — **crashed** (time limit, epoch 2179/3000) |
-| 6079238 | `uniform_lr_d9_cont2` — continuation, 500 epochs + test |
+| 6079238 | `uniform_lr_d9_cont2` — **cancelled** after 14 epochs (lr=1e-3 caused overshoot: 99.02% → 97.1%, recovered to only 98.6%) |
+| 6080257 | `uniform_lr_d9_cont3` — resubmit at lr=1e-4 to fine-tune near existing minimum |
 
 ```bash
+# cont2 (cancelled — lr too high)
 sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 "" no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
+# cont3 (lr=1e-4)
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont3 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 1e-4 no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
 ```
 
-_(pending — job 6079238)_
+_(in progress — job 6080257)_
 
 ---
 
