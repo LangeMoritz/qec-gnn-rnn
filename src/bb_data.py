@@ -386,7 +386,8 @@ def find_optimal_bb_batch_size(args: BBArgs, model, candidates=None):
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
             final_pred = model(x, edge_index, edge_attr, batch_labels, label_map, bs)
-            loss = nn.functional.binary_cross_entropy_with_logits(final_pred, last_label)
+            k_train = len(model.decoders)
+            loss = nn.functional.binary_cross_entropy_with_logits(final_pred, last_label[:, :k_train])
             loss.backward()
             if args.device.type == "cuda":
                 torch.cuda.synchronize()
