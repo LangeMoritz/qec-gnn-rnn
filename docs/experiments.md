@@ -26,7 +26,7 @@
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 | [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~460/1000, acc 84.3%, plateaued) |
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
-| [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | crashed (job 6094468); re-submit needed |
+| [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | in progress (job 6094580; 6094468 crashed) |
 | [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
 
 ---
@@ -1167,7 +1167,9 @@ sbatch run_training.sh 3 50 2 2048 256 500 0.003 1 si1000_d3_p3_ft d3_p0.001_t50
 |-----------|--------|
 | 6094468 | **crashed** — `unrecognized arguments: --intermediate` (flag missing from `train_nn.py`) |
 
-**Fix**: Added `--intermediate` as a stub `action='store_true'` to `train_nn.py` (currently ignored; intermediate label mode not yet implemented in the base decoder). Re-submit with the same command.
+**Fix**: Added `--intermediate` as a stub `action='store_true'` to `train_nn.py` (currently ignored; intermediate label mode not yet implemented in the base decoder). Re-submitted as job 6094580.
+
+| 6094580 | in progress |
 
 ---
 
