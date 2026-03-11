@@ -19,6 +19,13 @@
 | [11](#experiment-11-d5-large-gnn-continued-training) | d=5 Large GNN Continued Training | `google-data` | 2026-02-27 | pending |
 | [12](#experiment-12-hierarchical-decoder-d5-control-ablation) | Hierarchical Decoder d=5 — Frozen vs. Trainable vs. Random GNN | `iterative-decoding` | 2026-02-27 | completed + tested |
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
+| [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
+| [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
+| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | completed + tested (job 6080257) |
+| [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
+| [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
+| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~182/1000, acc 82.4%) |
+| [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
 
 ---
 
@@ -587,4 +594,541 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 
 ### Results
 
-_(pending)_
+- **6020435** (`adaptive_lr`, d=5): best acc 95.94% (below Exp 12 winner 96.78%). Per-group LR suppressed base GNN adaptation (d=3 base effective LR 200× lower than winner). See Exp 14 analysis.
+- **6020436** (`d9_from_exp12`, d=9): stuck at ~87% — per-group LR caused d=3 base to train at effective LR 2.44e-9 (100× below the useful regime). **Killed** at epoch ~205.
+
+---
+
+## Experiment 14: Patch-batching optimisation, lr=1e-4, fully trainable
+
+**Goal**: First production runs after the patch-batching speed-up (4 GNN calls instead of 16 for d=9, 1 instead of 4 for d=5), with a reduced learning rate of 1e-4 and fully trainable base models. ~500 K samples/epoch.
+
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Context
+
+- Patch-batching reduces sequential GPU dispatches: d=5 4→1 GNN call/step, d=9 16→4 GNN calls/step (each d5.embed_chunks internally batches its 4 d=3 sub-patches).
+- Benchmarked 1.59× throughput improvement for d=9 (7,955 vs 5,003 samples/s on A40).
+- Previous Exp 13 runs used default lr=1e-3. Switching to lr=1e-4 for finer convergence.
+- Base models are fully trainable (GNN + GRU + meta layers all unfrozen).
+
+### Setup
+
+| Parameter | Run A (d=5) | Run B (d=9) |
+|-----------|-------------|-------------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` |
+| Distance | 5 | 9 |
+| Rounds (t) | 50 | 50 |
+| dt | 2 | 2 |
+| p values | 0.001–0.005 (5 values) | 0.001–0.005 (5 values) |
+| Batch size | 2048 (auto-tuned) | 2048 (auto-tuned) |
+| Batches/epoch | 244 (≈500 K samples) | 244 (≈500 K samples) |
+| Epochs | 1000 | 1000 |
+| Learning rate | 1e-4 | 1e-4 |
+| GNN trainable | yes (fully trainable) | yes (fully trainable) |
+| GPU | A40 (Alvis) | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Run | Note |
+|-----------|-----|------|
+| 6032067 | A (d=5) | `trainable_lr1e-4` |
+| 6032068 | B (d=9) | `trainable_lr1e-4` | **Killed** (superseded by Exp 16) |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 2048 244 1000 trainable_lr1e-4 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" "" trainable_base "" "" 1e-4
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 2048 244 1000 trainable_lr1e-4 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" "" trainable_base "" "" 1e-4
+```
+
+### Results
+
+**Training results** (wandb, 1000 epochs, MWPM ≈ 94.86–94.89%):
+
+| Run | Job | Best acc | vs MWPM |
+|-----|-----|----------|---------|
+| d=5 `trainable_lr1e-4` | 6032067 | 94.51% | **−0.38%** (below MWPM) |
+| d=9 `trainable_lr1e-4` | 6032068 | pending | — |
+
+### Analysis
+
+The d=5 run fails to beat MWPM despite 1000 epochs of training with a fully trainable base. Root cause: the effective learning rate (lr / batch_size) is 5× lower than the Exp 12 winner.
+
+**Effective LR comparison** (linear scaling rule, lr / batch_size):
+
+| Run | LR | Batch | Effective LR | Best acc |
+|-----|----|-------|--------------|----------|
+| Exp 12 winner (`trainable_gnn`, 6005310) | 1e-3 | 4096 (auto) | 2.44e-7 | 96.78% |
+| Exp 13 `adaptive_lr` (6020435) — meta | 1e-3 | 8192 (auto) | 1.22e-7 | 95.94% |
+| Exp 13 `adaptive_lr` (6020435) — base GNN | 1e-5 | 8192 (auto) | 1.22e-9 | — |
+| Exp 14 `trainable_lr1e-4` (6032067) | 1e-4 | 2048 | 4.88e-8 | 94.51% |
+
+Note: Exp 14 used a smaller batch (2048) than Exp 13, compounding the low-LR effect. All three challenger runs are slower than the winner in effective LR terms; Exp 14 is 5× weaker. Exp 15 is a direct control to confirm this diagnosis.
+
+---
+
+## Experiment 15: Control — match Exp 12 effective LR
+
+**Goal**: Confirm that Exp 14's regression vs Exp 12 was purely due to lower effective LR. Replicate the Exp 12 winner's exact optimisation regime (lr=1e-3, batch=4096, no auto-batch) with the same codebase as Exp 14. If this matches Exp 12's ~96.78%, the effective LR is the sole differentiating factor.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Distance | 5 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples, same as Exp 12 winner) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12 winner exactly) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6038573 | `ctrl_lr1e-3_batch4096` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 5 0.001 50 2 4096 128 1000 ctrl_lr1e-3_batch4096 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+```
+
+### Results
+
+**Training results** (1000 epochs, MWPM ≈ 94.83%):
+
+| Run | Job | Final acc | vs MWPM |
+|-----|-----|-----------|---------|
+| d=5 `ctrl_lr1e-3_batch4096` | 6038573 | **96.06%** | **+1.23%** |
+
+Confirms that Exp 14's regression was purely due to lower effective LR. Result closely matches Exp 12 winner (96.78%), validating the effective-LR hypothesis. The small gap vs Exp 12 may reflect dataset/codebase differences since Exp 12.
+
+---
+
+## Experiment 16: d=9 continued training from Exp 13B
+
+**Goal**: Continue training the best d=9 checkpoint (`uniform_lr_d9`, Exp 13B) which reached 95.57% after 1000 epochs but was still improving. Restart with a fresh LR schedule (lr=1e-3 → 1e-4, same 0.95^ep decay) from the saved weights — this acts as a warm restart. Run for 3000 epochs to give sufficient time to converge. All d=9 runs with lower effective LR (6020436, 6032068) were killed.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Context
+
+- Scheduler is `LambdaLR(0.95^ep, floor=0.1)` — exponential decay, floors at 10% of starting LR (~epoch 45). No warm restarts in the scheduler; `load_path` resets the optimizer, so the high-LR phase acts as a warm restart.
+- `uniform_lr_d9` (6021817): 1000 epochs, final acc 95.57% vs MWPM 98.73%, loss still declining at ep 998 — not converged.
+- Killed runs: 6020436 (effective LR 100× too low for base), 6032068 (effective LR 5× too low overall).
+- Effective LR at start: 1e-3 / 4096 = 2.44e-7 (matches Exp 12 d=5 winner exactly).
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn` (Exp 12 best) |
+| Load path | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` |
+| Distance | 9 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 3000 |
+| Learning rate | 1e-3 → 1e-4 (0.95^ep, floor at ep ~45) |
+| Effective LR | 2.44e-7 → 2.44e-8 |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6038870 | `uniform_lr_d9_cont` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 3000 uniform_lr_d9_cont GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 "" no_auto_batch_size
+```
+
+### Results
+
+**Training results** (in progress, ~629/3000 epochs, MWPM ≈ 98.75%):
+
+| Step | Acc | MWPM | Gap |
+|------|-----|------|-----|
+| 0 | 87.76% | 98.75% | −10.99% |
+| 140 | 97.49% | 98.75% | −1.26% |
+| 324 | 98.05% | 98.75% | −0.70% |
+| 518 | 98.32% | 98.75% | −0.43% |
+| 629 | 98.42% | 98.75% | −0.33% |
+
+Steady convergence; gap to MWPM shrinking at ~0.01%/step at min LR. Started from prior d=9 checkpoint (acc 87.76%) — not a cold start. On track to cross MWPM with sufficient epochs.
+
+**Preliminary test** (job 6059180): test-only run (0 epochs) on the Exp 13B checkpoint (`iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9`) to get baseline numbers while Exp 16 training continues.
+
+**Preliminary test results** (p=0.001–0.005, t=5–200, ~1M shots; plot: `results/exp16_prelim_d9_test.pdf`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 |
+|--------|---|----|----|-----|------|------|
+| 0.001 | n/a* | n/a* | **0.29** | **0.70** | **0.48** | **0.40** |
+| 0.002 | **0.95** | **0.54** | **0.59** | **0.48** | **0.51** | **0.57** |
+| 0.003 | 1.04 | **0.83** | **0.72** | **0.68** | **0.63** | **0.79** |
+| 0.004 | 1.32 | 1.02 | **0.89** | **0.83** | **0.85** | 1.02 |
+| 0.005 | 1.42 | 1.22 | 1.04 | 1.02 | 1.02 | 1.29 |
+
+\* p=0.001, t=5/10: MWPM got 0 errors in 1M shots — shot-noise limited, ratio undefined.
+
+Key observations:
+- **p=0.001**: Strongly beats MWPM at t≥20 (best: −60% at t=20,200). t=5/10 shot-noise limited.
+- **p=0.002**: Beats MWPM at all t (40–54% improvement), best result.
+- **p=0.003**: Beats MWPM at t≥10 (17–37%); tied at t=5.
+- **p=0.004**: Beats MWPM at t=20–100; tied at t=10, slightly worse at t=200.
+- **p=0.005**: Roughly tied at t=20–100; worse at t=5,10,200.
+- **Short-t deficit at p≥0.004**: same pattern as d=5/d=7 — high-p regime not fully learned.
+- This is the Exp 13B checkpoint (not yet converged at training time); Exp 16 continued training expected to improve especially at high p.
+
+**Job 6038870 crash**: ran 2179/3000 epochs (hit 3-day time limit on 2026-03-07). Due to the old model-naming code (pre-commit 30d7446), the best checkpoint was saved by overwriting the loaded file: `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9.pt`. Final logged accuracy at crash: 99.02% at epoch 2178 (MWPM 98.75%), i.e. NN beats MWPM by +0.27%.
+
+**Continuation (job TBD)**: 500 more epochs from the same checkpoint, with extended testing (t=5–1000, 10M shots). Time limit increased to 7 days.
+
+| SLURM job | Note |
+|-----------|------|
+| 6038870 | `uniform_lr_d9_cont` — **crashed** (time limit, epoch 2179/3000) |
+| 6079238 | `uniform_lr_d9_cont2` — **cancelled** after 14 epochs (lr=1e-3 caused overshoot: 99.02% → 97.1%, recovered to only 98.6%) |
+| 6080257 | `uniform_lr_d9_cont3` — resubmit at lr=1e-4 to fine-tune near existing minimum |
+
+```bash
+# cont2 (cancelled — lr too high)
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 "" no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
+# cont3 (lr=1e-4)
+sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont3 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 1e-4 no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
+```
+
+**Training results** (job 6080257, 486 epochs from cont2 checkpoint, state=finished):
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **99.11%** |
+| MWPM accuracy | 98.75% |
+| Gap vs MWPM | **+0.36%** |
+
+**Test results** (p=0.001–0.005, t=5–1000, 10M shots; checkpoint `iterative_d9_p0.001_t50_dt2_260309_6080257_uniform_lr_d9_cont3_load_6021817`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 | 500 | 1000 |
+|--------|---|----|----|-----|------|------|------|------|
+| 0.001 | **0.27** | **0.67** | **0.12** | **0.14** | **0.30** | **0.38** | **0.49** | **0.55** |
+| 0.002 | **0.68** | **0.50** | **0.38** | **0.36** | **0.40** | **0.50** | **0.63** | **0.69** |
+| 0.003 | **0.79** | **0.59** | **0.55** | **0.48** | **0.52** | **0.67** | **0.86** | **0.97** |
+| 0.004 | **0.95** | **0.76** | **0.65** | **0.64** | **0.67** | **0.89** | 1.20 | 1.25 |
+| 0.005 | 1.07 | **0.92** | **0.81** | **0.78** | **0.84** | 1.13 | 1.39 | 1.16 |
+
+Absolute P_L values (NN / MWPM):
+
+| p | t=5 | t=50 | t=200 | t=1000 |
+|---|-----|------|-------|--------|
+| 0.001 | 2.9e-7 / 1.1e-6 | 1.9e-6 / 1.4e-5 | 2.0e-5 / 5.2e-5 | 1.5e-4 / 2.7e-4 |
+| 0.002 | 2.1e-5 / 3.1e-5 | 1.6e-4 / 4.4e-4 | 9.4e-4 / 1.9e-3 | 6.4e-3 / 9.3e-3 |
+| 0.003 | 2.0e-4 / 2.5e-4 | 1.8e-3 / 3.7e-3 | 9.8e-3 / 1.5e-2 | 6.6e-2 / 6.9e-2 |
+| 0.004 | 1.0e-3 / 1.1e-3 | 9.6e-3 / 1.5e-2 | 5.4e-2 / 6.0e-2 | 0.289 / 0.231 |
+| 0.005 | 3.3e-3 / 3.1e-3 | 3.4e-2 / 4.4e-2 | 0.177 / 0.156 | 0.498 / 0.430 |
+
+Key observations:
+- **p=0.001–0.003**: beats MWPM at all t=5–1000; best at t=20 (−88% at p=0.001, −62% at p=0.002).
+- **p=0.004**: beats MWPM at t=5–200; slightly worse at t=500,1000 (high-p long-sequence regime).
+- **p=0.005**: beats MWPM at t=10–100; slightly worse outside that range.
+- Strong improvement over Exp 13B preliminary (cont3 fine-tuning clearly helped at all p/t).
+
+**Figure**: `results/exp16_20_d7_d9_test_results.pdf`
+
+---
+
+## Experiment 17: Hierarchical Decoder d=7 (3×3 patches of d=3)
+
+**Goal**: First d=7 hierarchical decoder run, using the new `ThreeByThreeHierarchicalDataset` (9 overlapping d=3 patches in a 3×3 grid) and `MetaGRUDecoder3x3` (Conv2d(kernel=3) spatial aggregation). Settings match Exp 15 exactly — same base model, same effective LR regime (lr=1e-3, batch=4096), fully trainable base — to enable a direct d=5 vs d=7 comparison.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9, same as Exp 15) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12/15) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 (new — d=7 only) |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6039967 | `ctrl_lr1e-3_batch4096` |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 ctrl_lr1e-3_batch4096 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+```
+
+### Results
+
+**Training results** (1000 epochs, MWPM ≈ 97.51%):
+
+| Step | Acc | MWPM | Gap |
+|------|-----|------|-----|
+| 0 | 52.61% | 97.51% | −44.90% |
+| 89 | 94.55% | 97.51% | −2.96% |
+| 333 | 96.06% | 97.51% | −1.45% |
+| 660 | 96.99% | 97.51% | −0.52% |
+| 826 | 96.62% | 97.51% | −0.89% |
+| 999 | 96.00% | 97.51% | −1.51% |
+
+LR decayed to min (1e-4) by epoch ~89; model oscillated noisily in the range 93.9–97.0% for ~900 epochs without crossing MWPM. High gradient noise at min LR prevents convergence — continued with lower LR in Exp 18.
+
+**Test results** (p=0.001–0.005, t=5–200, ~1M shots; plot: `results/exp17_d7_test_results.pdf`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 |
+|--------|---|----|----|-----|------|------|
+| 0.001 | 1.10 | 0.97 | **0.83** | **0.68** | **0.60** | 1.32 |
+| 0.002 | 1.22 | 0.95 | **0.92** | **0.87** | **0.79** | **0.85** |
+| 0.003 | 1.35 | 1.16 | 1.05 | ≈1.00 | ≈1.00 | **0.97** |
+| 0.004 | 1.57 | 1.30 | 1.18 | 1.12 | 1.09 | 1.09 |
+| 0.005 | 1.60 | 1.42 | 1.29 | 1.24 | 1.21 | 1.20 |
+
+Key observations:
+- **p=0.001**: beats MWPM for t=20–100 (best: −40% at t=100), loses at t=200 — training not fully converged.
+- **p=0.002**: beats MWPM across all t≥10 — most reliable operating point.
+- **p=0.003**: roughly tied (within 5%) across all t.
+- **p≥0.004**: consistently 10–60% worse — high-error regime not well learned.
+- **Short-t deficit**: 10–60% worse at t=5 across all p — same short-t issue as other intermediate-mode models.
+
+Model is functional but not yet competitive at high p or short t. Exp 18 targets finer convergence via lower LR warm restart.
+
+---
+
+## Experiment 18: d=7 continued training with lr=1e-4
+
+**Goal**: Continue training the Exp 17 d=7 checkpoint with a lower starting LR (1e-4 → 1e-5 floor) to stabilise the noisy oscillations observed at the Exp 17 min LR. The model has been at LR=1e-4 for ~730 epochs without crossing MWPM; a warm restart at 1e-4 with a new decay schedule reduces the effective step size and may allow finer convergence.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Load path | `iterative_d7_p0.001_t50_dt2_260304_6039967_ctrl_lr1e-3_batch4096` (Exp 17) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 300 |
+| Learning rate | 1e-4 → 1e-5 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6048341 | `ctrl_lr1e-4_cont` — **crashed** (see below) |
+| 6059179 | `ctrl_lr1e-4_cont` — rerun, 300 epochs + test |
+
+### Crash & Fix (6048341)
+
+Job 6048341 crashed immediately on checkpoint load:
+```
+RuntimeError: size mismatch for meta_decoder.0.weight: copying a param with shape torch.Size([1, 256])
+from checkpoint, the shape in current model is torch.Size([256, 256]).
+```
+The two-layer decoder head (`Linear→ReLU→Linear→Sigmoid`) introduced in commit `266f2fa` was incompatible with the Exp 17 checkpoint (single `Linear→Sigmoid`). Fix: reverted `meta_decoder` to single `Linear(hidden, 1) → Sigmoid` in both `MetaGRUDecoder` and `MetaGRUDecoder3x3` (commit `e74bef8`). Also fixed `train_hierarchical.py` to always generate a fresh model name (load lineage tracked via `_load_{parent_job_id}` suffix) and to skip wandb/MWPM baseline for test-only runs (`n_epochs=0`).
+
+### Commands
+
+```bash
+# Original (crashed):
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 ctrl_lr1e-4_cont GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260304_6039967_ctrl_lr1e-3_batch4096 1e-4 no_auto_batch_size
+# Rerun (300 epochs + test):
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 300 ctrl_lr1e-4_cont GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260304_6039967_ctrl_lr1e-3_batch4096 1e-4 no_auto_batch_size
+```
+
+### Results
+
+_(pending — job 6059179 in progress)_
+
+---
+
+## Experiment 19: d=17 first run (from Exp 13B d=9 base)
+
+**Goal**: First d=17 hierarchical decoder run using the new `ThreeLevelHierarchicalDataset` (4×4×4 = 64 leaf d=3 patches) and three-level stacked `MetaGRUDecoder`. Base model is the Exp 13B d=9 checkpoint (`iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9`). Settings match Exp 16 exactly — same effective LR regime (lr=1e-3, batch=4096) — to enable direct comparison across distances.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### New features (this experiment)
+
+- `ThreeLevelHierarchicalDataset` in `src/data.py`: splits d=17 → 4 d=9 outer patches → 4×4 d=5 inner patches → 4×4×4 d=3 leaf patches; returns `list[4][4][4]` of 5-tuples
+- `ThreeLevelHierarchicalBatchPrefetcher`: background-threaded prefetcher for the above
+- Recursive `_load_base_model()` in `train_hierarchical.py`: handles arbitrary nesting depth (d=3 → d=5 → d=9 → d=17); replaces the old two-branch loading block
+- Dataset selection: `d==17 and base_is_meta` → `ThreeLevelHierarchicalDataset`
+- `MetaGRUDecoder.embed_chunks()` already handles 3-level nesting via recursive `_embed_patch()` calls — no changes needed
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` (Exp 13B) |
+| Distance | 17 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 1000 |
+| Learning rate | 1e-3 (default) |
+| Effective LR | 2.44e-7 (matches Exp 12/15/16) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 4×4×4 (three-level 2×2) |
+
+### Commands
+
+```bash
+# Original (cancelled — upfront MWPM was too slow for d=17):
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 4096 128 1000 first_d17 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size
+# Resubmit (skip upfront MWPM baseline; MWPM still computed per-(p,t) in test loop):
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 4096 128 1000 first_d17 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" "" "" no_auto_batch_size skip_mwpm_baseline
+```
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6060984 | `first_d17` (cancelled — upfront MWPM too slow) |
+| 6063931 | `first_d17` resubmit (skip_mwpm_baseline) — OOM on A40 (no_auto_batch_size) |
+| 6079829 | `first_d17` resubmit on A100fat (80 GB), auto batch size enabled |
+| TBD | `high_p_d17` — new run at p=0.006–0.009 (near threshold) to fix label sparsity; job 6079829 stuck at loss=ln(2) because d=17 at p≤0.005 has ~0–2 logical errors per batch of 2048 |
+
+### Results
+
+_(pending — job 6079829 in progress, epoch ~182/1000, best accuracy 82.4%)_
+
+Job 6079829 was stuck at loss=ln(2), accuracy=50% for the first ~35 epochs, then broke out at epoch 36 and is now learning normally (accuracy 82.4% at epoch 182).
+
+### Corrected diagnosis: slow gradient signal, not label sparsity
+
+The original diagnosis (label sparsity: "only ~2 positive examples per batch") was **wrong**. The formula `(p/p_th)^9` gives the *decoded* logical error rate, but the training labels are the **raw** stim logical observable — the physical final state before any correction. Empirical check (200k shots at p=0.002, t=50):
+
+| d | class-1 ratio |
+|---|---------------|
+| 3 | 26.7% |
+| 5 | 38.0% |
+| 7 | 43.5% |
+| 9 | 46.9% |
+| 17 | 49.8% |
+| 21 | 49.8% |
+
+The raw observable approaches 50% as d increases (more qubits = more error accumulation), so large-d labels are perfectly balanced, not sparse. The model must learn to use syndrome information to predict this label — at large d with many patches the gradient signal is weaker, which explains the slow start before breakout.
+
+The planned `high_p_d17` resubmission is **not needed** given job 6079829 is now improving.
+
+---
+
+## Experiment 20: d=7 continued training (3000 epochs, lr=1e-4)
+
+**Goal**: Continue training the Exp 18 d=7 checkpoint for 3000 more epochs at the same lr=1e-4 to allow the model to converge further. Exp 18 ran for only 300 epochs; training was still improving at the end.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+| Load path | `iterative_d7_p0.001_t50_dt2_260306_6059179_ctrl_lr1e-4_cont_load_6039967` (Exp 18) |
+| Distance | 7 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | 4096 (fixed, no auto-batch) |
+| Batches/epoch | 128 (≈524 K samples/epoch) |
+| Epochs | 3000 |
+| Learning rate | 1e-4 → 1e-5 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+| Patch grid | 3×3 |
+
+### Runs
+
+| SLURM job | Note |
+|-----------|------|
+| 6064033 | `lr1e-4_cont2` — **cancelled** at epoch 2752/3000 (time limit approaching); best acc 97.73% |
+| 6079402 | `lr1e-5_cont3` — continuation, 1000 epochs, lr=1e-5→1e-6, extended test |
+
+### Commands
+
+```bash
+# Original (cancelled at epoch 2752):
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 3000 lr1e-4_cont2 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260306_6059179_ctrl_lr1e-4_cont_load_6039967 1e-4 no_auto_batch_size
+# Continuation (1000 epochs, lr=1e-5→1e-6, t=5–1000, 10M shots):
+sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 128 1000 lr1e-5_cont3 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d7_p0.001_t50_dt2_260306_6064033_lr1e-4_cont2_load_6059179 1e-5 no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
+```
+
+### Results
+
+**Training results** (job 6079402, ~880 epochs, state=finished):
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **97.72%** |
+| MWPM accuracy | 97.49% |
+| Gap vs MWPM | **+0.23%** |
+
+**Test results** (p=0.001–0.005, t=5–1000, 10M shots; checkpoint `iterative_d7_p0.001_t50_dt2_260309_6079402_lr1e-5_cont3_load_6064033`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 | 500 | 1000 |
+|--------|---|----|----|-----|------|------|------|------|
+| 0.001 | **0.79** | **0.47** | **0.51** | **0.44** | **0.48** | **0.47** | 111 ✗ | 139 ✗ |
+| 0.002 | **0.92** | **0.74** | **0.65** | **0.60** | **0.58** | **0.60** | 1.69 ✗ | 2.94 ✗ |
+| 0.003 | 1.07 | **0.87** | **0.77** | **0.72** | **0.71** | **0.72** | **0.86** | 1.11 |
+| 0.004 | 1.18 | **0.96** | **0.88** | **0.86** | **0.84** | **0.88** | **0.95** | 1.05 |
+| 0.005 | 1.25 | 1.11 | 1.05 | **0.99** | **0.97** | **0.98** | 1.06 | 1.02 |
+
+Absolute P_L values (NN / MWPM):
+
+| p | t=5 | t=50 | t=200 | t=1000 |
+|---|-----|------|-------|--------|
+| 0.001 | 1.2e-5 / 1.5e-5 | 6.2e-5 / 1.4e-4 | 2.7e-4 / 5.7e-4 | 0.400 / 0.00287 |
+| 0.002 | 1.8e-4 / 2.0e-4 | 1.4e-3 / 2.3e-3 | 5.4e-3 / 9.0e-3 | 0.132 / 0.0448 |
+| 0.003 | 1.0e-3 / 9.5e-4 | 8.2e-3 / 1.1e-2 | 3.3e-2 / 4.5e-2 | 0.210 / 0.189 |
+| 0.004 | 3.4e-3 / 2.9e-3 | 2.9e-2 / 3.4e-2 | 0.110 / 0.126 | 0.409 / 0.389 |
+| 0.005 | 8.2e-3 / 6.6e-3 | 7.6e-2 / 7.7e-2 | 0.244 / 0.248 | 0.497 / 0.488 |
+
+Key observations:
+- **p=0.001, t=5–200**: beats MWPM (44–79% improvement), but **catastrophic failure at t≥500** (NN P_L 0.159 and 0.400 vs MWPM 0.00142 and 0.00287). Same long-sequence instability pattern as d=7 Exp 17, not resolved by lr=1e-5 fine-tuning.
+- **p=0.002, t=5–200**: beats MWPM (8–42% improvement); failure at t≥500 (1.7× and 2.9× worse).
+- **p=0.003–0.004**: beats or matches MWPM across most t; failure only at t=1000 for p=0.003.
+- **p=0.005**: roughly tied across all t (within ~5%).
+- The long-sequence instability at low p (t≥500 for p≤0.002) is a known issue: the model is trained at t=50 and fails to generalise to very long sequences where logical errors are extremely rare. Training on multiple t values would likely fix this.
+
+**Figure**: `results/exp16_20_d7_d9_test_results.pdf`

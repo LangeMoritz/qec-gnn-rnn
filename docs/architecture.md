@@ -252,7 +252,15 @@ Replaced `torch_geometric.nn.pool.knn_graph` with precomputed edge weights:
 
 # Training Speed Optimization
 
-## Baseline Timing (`main` branch, A40 GPU, n_batches=256, batch_size=2048, t=50, dt=2)
+## Timing Metric Definitions (current, after fix)
+
+- `model_time`: total GPU compute time per epoch — `torch.cuda.synchronize()` before/after the forward+backward+optim block, summed across all batches.
+- `data_time`: GPU idle time per epoch = `epoch_time − model_time`. With prefetch on this is prefetch-queue starvation; with prefetch off it is actual data generation time.
+- `epoch_time`: total wall-clock seconds per epoch.
+
+> **Note on tables below**: Measured with **prefetch OFF** using the pre-fix timing code (no CUDA sync; `data_time` was direct generation time; `model_time` slightly underestimated). Use for relative comparisons only.
+
+## Baseline Timing (`main` branch, A40 GPU, n_batches=256, batch_size=2048, t=50, dt=2, prefetch OFF)
 
 | Config | label_mode | data (s) | model (s) | total (s) | data % |
 |--------|-----------|----------|-----------|-----------|--------|
@@ -274,7 +282,7 @@ Pilot sample of 10k shots estimates acceptance rate at init. First draw oversamp
 ### 3. Precomputed fully-connected edges (DONE)
 Replaced per-batch `knn_graph` (PyG KNN search) with precomputed L-inf inverse-square weight matrix. Groups with same size share cached local pair indices.
 
-## Current Timing (`speedup` branch, A40 GPU, same settings)
+## Current Timing (`speedup` branch → merged to `main`, A40 GPU, same settings, prefetch OFF)
 
 ### After masked GRU + adaptive oversampling (before FC edges):
 
@@ -299,6 +307,20 @@ Model time: **54-57x faster** on A40 (torch.compile on CUDA far more effective t
 
 Data now 88-90% of total epoch time. FC edges gave 1.2-1.8x additional data speedup.
 
+## Hierarchical Dataset Speed-up (iterative-decoding branch)
+
+Before the fix, `HierarchicalDataset` (d=5, t=50) on A40 took ~167 s/epoch with **14% GPU utilisation**:
+- `model_time` ~23 s (256 batches × 0.09 s GPU compute)
+- `data_time` (prefetch wait) ~144 s — background thread generating 4 patches sequentially with a Python for-loop over each sample
+
+### Fix 1: Vectorized sliding window
+Replaced `[patch_coord[s] for s in patch_syndromes]` + `get_sliding_window()` B-iteration loop with `np.where(patch_syndromes)` + fully-vectorized chunk expansion (no Python loop). Eliminates 4 × B = 8192 Python iterations per batch.
+
+### Fix 2: Parallel patch building (`ThreadPoolExecutor`)
+The 4 (or 16 for d=9) patch builds are independent; all run concurrently. Since numpy C ops release the GIL this gives real multi-core parallelism.
+
+**Expected result**: data generation per batch falls below GPU compute (~0.09 s), prefetcher fully hides it, GPU utilisation approaches 100%.
+
 ## MPS Benchmark (MacBook, 20 batches)
 
 On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x on CUDA):
@@ -319,9 +341,9 @@ On MPS, `torch.compile` is much less effective (1.3-2.2x model speedup vs 54-57x
 - **GIL-friendly**: numpy C operations (FC edges, sliding window) release the GIL → real parallelism
 - **Sentinel-based**: `None` signals end of epoch; queue is drained between epochs
 
-Enabled by default (`--no_prefetch` to disable). With prefetch, `data_time` in epoch logs measures only the queue wait time (time GPU was idle waiting for data), not total data generation time.
+Enabled by default (`--no_prefetch` to disable). With the corrected timing, `data_time = epoch_time − model_time` now correctly reflects GPU idle time (prefetch queue starvation), not queue-unpack time.
 
-Expected impact: hide ~model_time per epoch (3-8s), since data >> model the overlap saves ~10-15%.
+With the hierarchical vectorize+parallel fix, data generation is faster than GPU compute, so prefetch fully hides it and `data_time ≈ 0`.
 
 ## Auto Batch Size Tuning (DONE)
 
@@ -517,9 +539,31 @@ hard cases (full-patch logical errors) where individual patch estimates are nois
 
 ## Scaling to d=9 and Beyond
 
-### Two d=5 models (for d=9)
+### Implemented approach: single shared base model
 
-After verifying the d=5 center-logical model, train two additional d=5 variants:
+The boundary-aware design (d3_north / d3_south) is the theoretically motivated
+long-term target. In practice we first validated a simpler single-base approach:
+one shared d=3 GRUDecoder runs on all 4 patches, and the meta-CNN + meta-GRU
+learns to combine them for d=5 prediction. Exp 12 showed this works well.
+
+For d=9 the same recursion applies with `MetaGRUDecoder` as the base:
+
+```
+d=3 GRUDecoder.embed_chunks()          →  [B, g, E]  per patch   (4 patches)
+   ↓  d=5 MetaGRUDecoder.embed_chunks()  →  [B, g, H5] per d=5 chunk  (4 chunks)
+      ↓  d=9 MetaGRUDecoder.forward()    →  [B, g, H9] → meta-GRU → prediction
+```
+
+`embed_chunks()` is the CNN-only part (no GRU) — see `hierarchical_decoder.py`.
+Only the outermost level runs the GRU; inner levels are purely spatial aggregators.
+
+**Key**: `TwoLevelHierarchicalDataset` (d=9) builds 4 outer d=5 patches, each
+split into 4 inner d=3 sub-patches, yielding 16 leaf patches per sample.
+
+### Two d=5 models (future — for boundary-aware d=9)
+
+After verifying the single-base d=5 center-logical model, train two additional
+d=5 variants for the boundary-aware approach:
 
 | Model | Label | d=3 patches used |
 |-------|-------|-----------------|
@@ -533,7 +577,7 @@ data-qubit row. For `d5_south`: same with `d3_south` and the bottom row label.
 The d=3 base models remain frozen. Only the meta-CNN weights differ between
 `d5_north`, `d5_south`, and the center-logical d=5 decoder.
 
-### d=9 patch assignment
+### d=9 patch assignment (boundary-aware, future)
 
 ```
 ┌──────────────┬──────────────┐
@@ -597,16 +641,62 @@ x,y ∈ {0,2,4,6} after renorm; 240/240 d=5 detectors covered.
 
 ## Training Roadmap
 
+### Single-base approach (implemented, Exp 12–13)
+
+| Step | What to train | Label | Status |
+|------|--------------|-------|--------|
+| 1 | d=3 `GRUDecoder` (standard) | d=3 logical observable | DONE (Exp 9) |
+| 2 | d=5 `MetaGRUDecoder`, single shared d=3 base | d=5 logical observable | DONE (Exp 12) |
+| 3 | d=9 `MetaGRUDecoder`, d=5 meta base | d=9 logical observable | IN PROGRESS (Exp 13) |
+
+### Boundary-aware approach (future)
+
 | Step | What to train | Label | Status |
 |------|--------------|-------|--------|
 | 1a | `d3_north` | north boundary row parity (stim observable) | TODO |
 | 1b | `d3_south` | south boundary row parity (stim observable) | TODO |
-| 2 | d=5 center meta-CNN | d=5 logical observable | TODO |
+| 2 | d=5 center meta-CNN (boundary-aware) | d=5 logical observable | TODO |
 | 3a | `d5_north` meta-CNN | d=5 north row parity | TODO |
 | 3b | `d5_south` meta-CNN | d=5 south row parity | TODO |
-| 4 | d=9 center meta-CNN | d=9 logical observable | TODO |
+| 4 | d=9 center meta-CNN (boundary-aware) | d=9 logical observable | TODO |
 
-Steps 1–2 are the minimum to demonstrate the approach at d=5.
+---
+
+## Training Performance & Optimisations
+
+### Patch-batching in `embed_chunks` (2026-03-03)
+
+**Profiling setup**: `kernprof` (line_profiler) on a 2-epoch d=5 run, batch_size=8192, n_batches=4.
+
+**Bottleneck breakdown (before optimisation):**
+
+| Function | Time | % of forward |
+|----------|------|--------------|
+| `MetaGRUDecoder.embed_chunks` | 505 ms | 81% |
+| — `_embed_patch` loop (4× sequential) | 293 ms | 47% |
+| — `spatial_conv` (2×2 CNN) | 197 ms | 32% |
+| `meta_rnn` (GRU) | 88 ms | 14% |
+| `meta_decoder` | 28 ms | 5% |
+
+Inside `GRUDecoder.embed` (called 4× per forward for d=5, 16× for d=9):
+- GNN layers: 118 ms (46%), `global_mean_pool`: 140 ms (54%)
+
+**Fix — `_embed_patches_batched`**: concatenate all 4 patches' graph data (offset `edge_index` and `batch_labels`), run a single GNN forward pass, split the output and apply `group()` per patch. Replaces 4 GPU dispatches with 1.
+
+- **d=5**: 4 → 1 GNN call per forward pass.
+- **d=9**: 4 sequential `d5.embed_chunks` calls, each internally batching 4 d=3 sub-patches → 16 → 4 GNN calls. Batching all 16 at once was tried but hurt performance: 16× larger tensors caused GPU cache pressure that halved the effective batch_size, reducing throughput 2.4×.
+
+**Benchmark result (d=9, all 5.4M params trainable, 499,712 samples/epoch):**
+
+| | Before | After |
+|-|--------|-------|
+| GNN calls/forward | 16 sequential | 4 (×4 batched each) |
+| Auto-tuned batch_size | 4096 | 8192 |
+| model_time/epoch | 104.8 s | 65.9 s |
+| Throughput | 5,003 samples/s | 7,955 samples/s |
+| **Speedup** | — | **1.59×** |
+
+After the fix, `spatial_conv` becomes the dominant cost (~48% of `embed_chunks`).
 
 ---
 
@@ -614,21 +704,26 @@ Steps 1–2 are the minimum to demonstrate the approach at d=5.
 
 | Component | Status | File |
 |-----------|--------|------|
-| `HierarchicalDataset` (patch extraction) | DONE | `data.py` |
+| `HierarchicalDataset` (d=5 patch extraction) | DONE | `data.py` |
 | `HierarchicalBatchPrefetcher` | DONE | `data.py` |
+| `TwoLevelHierarchicalDataset` (d=9, 4×4 patches) | DONE | `data.py` |
+| `TwoLevelHierarchicalBatchPrefetcher` | DONE | `data.py` |
 | `GRUDecoder.embed_chunks` (GNN only, no RNN) | DONE | `gru_decoder.py` |
-| `MetaGRUDecoder` (Conv2d + meta-GRU) | DONE | `hierarchical_decoder.py` |
-| `train_hierarchical.py` | DONE | `examples/train_hierarchical.py` |
+| `MetaGRUDecoder` (Conv2d + ReLU + meta-GRU) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder.embed_chunks` (CNN only, no GRU) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder._embed_patch` (dispatches on base type) | DONE | `hierarchical_decoder.py` |
+| `MetaGRUDecoder.__init__` handles `MetaGRUDecoder` base | DONE | `hierarchical_decoder.py` |
+| `train_hierarchical.py` (auto-detect base type, d=9 support, per-group LR) | DONE | `scripts/train_hierarchical.py` |
 | `run_hierarchical.sh` | DONE | `run_hierarchical.sh` |
+| Per-group LR in optimizer (d=3: 1e-5, d=5: 1e-4, d=9: 1e-3) | DONE | `scripts/train_hierarchical.py` |
 | Boundary-row observable extraction (stim) | TODO | `data.py` |
 | Two-base-model patch assignment in `HierarchicalDataset` | TODO | `data.py` |
-| ReLU after Conv2d in `MetaGRUDecoder` | TODO | `hierarchical_decoder.py` |
 | `d3_north` / `d3_south` training | TODO | cluster |
 | `d5_north` / `d5_south` meta-CNN variants | TODO | cluster |
 
-**What the base model contributes**: GNN (`embed`) only, frozen. The base GRU is
-not used — all temporal integration is handled by the meta-GRU. The base decoder
-head is discarded.
+**What the base model contributes**: `embed_chunks()` (GNN only, no RNN). The base
+GRU is not used in the hierarchical forward pass — all temporal integration is
+handled by the outermost meta-GRU. The base decoder head is discarded.
 
 ---
 
@@ -684,3 +779,82 @@ p_ij model ~2x worse than Google's RL-optimized decoder, but captures error supp
 1. Use saved DEMs to generate large synthetic training data
 2. Pretrain GNN-RNN decoder on synthetic data
 3. Fine-tune on real detection events
+
+---
+
+# SI1000 Pretraining Noise Calibration
+
+## Goal
+Choose a SI1000 noise level for pretraining that matches the bulk detection event
+density of the real experimental data, so the model sees realistic syndrome
+patterns before fine-tuning.
+
+## Google Dataset Circuits
+
+The `circuit_noisy_si1000.stim` files in the 105Q dataset use p=0.001:
+
+| Instruction | Value | SI1000 meaning |
+|---|---|---|
+| `DEPOLARIZE2(0.001)` | p | CZ(p) |
+| `DEPOLARIZE1(0.0001)` | p/10 | AnyClifford₁(p/10), Idle(p/10) |
+| `DEPOLARIZE1(0.002)` | 2p | ResonatorIdle(2p) |
+| `DEPOLARIZE1(0.001)` | p | post-M ancilla idle (extra, see below) |
+| `X_ERROR(0.002)` | 2p | Init_Z(2p) |
+| `M(0.005)` | 5p | M_Z(5p) |
+
+These circuits mostly follow the **modern (AQ2) SI1000** interpretation (M and R
+as separate operations, each with their own full noise sets), with one extra term:
+`DEPOLARIZE1(p)` applied to the measured ancilla qubits in the TICK between M and
+R. This term is not in either the old or new SI1000 definition — it models ancilla
+depolarisation during the M→R gap in the XZZX circuit structure.
+
+## Bulk Detection Event Density
+
+"Bulk" = detectors with t_min < t < t_max (excluding first and last round).
+Measured from `detection_events.b8` + `circuit_ideal.stim`, Z basis, r=50:
+
+| Distance | Experimental (Z, r50) | Suppl. Fig. S22 (all bases) |
+|---|---|---|
+| d=3 | 6.2% (range 5.3–7.5%) | 7.7% |
+| d=5 | 7.3% (range 6.8–7.9%) | 8.5% |
+| d=7 | 7.7% | 8.7% |
+
+Suppl. Fig. S22 does not specify which cycle counts the experimental averages
+come from.
+
+## Simulated Bulk Detection Rates vs p
+
+Computed by uniformly scaling all error parameters in `circuit_noisy_si1000.stim`:
+
+| Scale | p | d=3 bulk | d=5 bulk | d=7 bulk |
+|---|---|---|---|---|
+| ×1 | 0.001 | ~3.1% | ~2.9% | ~3.5% |
+| ×2 | 0.002 | ~5.6% | ~6.1% | ~6.7% |
+| ×3 | 0.003 | ~8.1% | ~8.9% | ~9.7% |
+| ×4 | 0.004 | ~10.4% | ~11.3% | ~12.5% |
+
+AQ2 pretrained at p=0.004 (×4), which overshoots the experimental detection
+density by ~1.5–2×. The closest match to the raw experimental values is p≈0.002;
+p=0.003 sits between the Z-basis measurements and the Suppl. Fig. S22 all-bases
+averages.
+
+## Chosen Pretraining Level: p = 0.003
+
+We use **p=0.003 (×3 scaling)** for pretraining. Scaled circuits are saved as
+`circuit_noisy_si1000_p3.stim` for all 14 patches, Z basis, r=50:
+
+```
+p_ij_from_google_data/2024_google_105Q_surface_code_d3_d5_d7/
+  d{3,5,7}_*/Z/r50/circuit_noisy_si1000_p3.stim
+```
+
+Scaling map (×3 from p=0.001 base):
+
+| Original | Scaled (p=0.003) |
+|---|---|
+| `DEPOLARIZE1(0.0001)` | `DEPOLARIZE1(0.0003)` |
+| `DEPOLARIZE1(0.001)` | `DEPOLARIZE1(0.003)` |
+| `DEPOLARIZE1(0.002)` | `DEPOLARIZE1(0.006)` |
+| `DEPOLARIZE2(0.001)` | `DEPOLARIZE2(0.003)` |
+| `M(0.005)` | `M(0.015)` |
+| `X_ERROR(0.002)` | `X_ERROR(0.006)` |

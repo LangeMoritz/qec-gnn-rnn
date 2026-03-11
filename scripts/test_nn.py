@@ -14,7 +14,7 @@ Usage:
         --shots 1000 --batch_size 100 --rounds 5 10 20
 """
 import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import argparse
 import numpy as np
@@ -83,8 +83,8 @@ def main():
                 dt=cli.dt,
                 use_intermediate=intermediate,
                 batch_size=cli.batch_size,
-                embedding_features=[3, 32, 64, 128, 256, 512],
-                hidden_size=512,
+                embedding_features=[3, 64, 256],
+                hidden_size=256,
                 n_gru_layers=4,
             )
             print(f"Loading {name} model from {path}")
