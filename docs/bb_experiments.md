@@ -207,7 +207,30 @@ sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003
 
 ---
 
-## Exp BB-6: Larger code [[144,12,12]]
+## Exp BB-6: Single-logical training, [[72,12,6]]
+
+**Status**: RUNNING — job 6092964
+
+**Goal**: Train only on logical 0 (n_logicals=1) to establish a single-logical baseline.
+Simpler target: model only needs to decode 1 of 12 logicals correctly.
+Compares against scaled LSD baseline: P_L_single ≈ P_L_all / 12.
+
+**Setup**:
+- Code: [[72, 12, 6]], t=6, dt=2, g_max=6
+- embedding_features = [4, 64, 128, 256, 512, 1024], hidden_size = 1024
+- n_gru_layers = 4, decoder_hidden = 256, n_logicals = 1
+- p_list = [0.001, 0.002, 0.003], n_epochs = 3000 (fresh start), n_batches = 128, batch = 4096
+- wandb project: `GNN-RNN-BB-codes`
+- LSD target (wandb): ~99.959% accuracy (P_L ≈ 0.041%, scaled from all-12 cache by 1/12)
+
+**Commands**:
+```bash
+sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256 1   # job 6092964
+```
+
+---
+
+## Exp BB-7: Larger code [[144,12,12]]
 
 **Status**: PLANNED
 
