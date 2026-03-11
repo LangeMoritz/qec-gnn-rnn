@@ -44,6 +44,7 @@ class BBArgs:
     hidden_size: int = 256
     n_gru_layers: int = 4
     decoder_hidden_size: int | None = None  # MLP head intermediate dim; None → hidden_size // 4
+    n_logicals: int | None = None           # Number of logicals to train on; None → all k
 
     # Logging
     log_wandb: bool = False

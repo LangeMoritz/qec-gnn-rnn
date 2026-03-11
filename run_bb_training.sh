@@ -29,6 +29,7 @@ pip install ldpc --quiet 2>/dev/null
 # $12: test             any non-empty string enables --test (e.g. "test")
 # $13: n_gru            number of GRU layers (default: 4)
 # $14: decoder_hidden   MLP head hidden dim; omit for linear head (e.g. 256)
+# $15: n_logicals       number of logicals to train on; omit for all k (e.g. 1)
 #
 # Examples:
 #   sbatch run_bb_training.sh 72 6 0.001 500 GNN-RNN-BB-codes
@@ -36,6 +37,7 @@ pip install ldpc --quiet 2>/dev/null
 #   sbatch run_bb_training.sh 72 6 0.001 300 GNN-RNN-BB-codes my_model
 #   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "" 256 "4 64 128 256 512 1024"
 #   sbatch run_bb_training.sh 72 6 0.001 1000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256
+#   sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256 1
 
 python -u scripts/train_bb.py \
     --code_size "${1:-72}" \
@@ -53,4 +55,5 @@ python -u scripts/train_bb.py \
     ${11:+--dt "${11}"} \
     ${12:+--test} \
     ${13:+--n_gru "${13}"} \
-    ${14:+--decoder_hidden "${14}"}
+    ${14:+--decoder_hidden "${14}"} \
+    ${15:+--n_logicals "${15}"}

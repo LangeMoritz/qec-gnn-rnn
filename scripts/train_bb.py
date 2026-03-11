@@ -62,6 +62,8 @@ def parse_args():
     p.add_argument("--save",    type=str, default=None,
                    help="Model name to save (auto-generated if not given)")
     p.add_argument("--seed",    type=int, default=None)
+    p.add_argument("--n_logicals", type=int, default=None,
+                   help="Number of logicals to train on (default: all k)")
     p.add_argument("--test",       action="store_true",
                    help="Evaluate best checkpoint after training at all training (p, t) values")
     p.add_argument("--test_shots", type=int, default=10_000_000,
@@ -94,6 +96,7 @@ def main():
         hidden_size          = cli.hidden,
         n_gru_layers         = cli.n_gru,
         decoder_hidden_size  = cli.decoder_hidden,
+        n_logicals           = cli.n_logicals,
         log_wandb        = cli.wandb,
         wandb_project    = cli.wandb_project,
         prefetch         = not cli.no_prefetch,
@@ -180,7 +183,8 @@ def main():
                     B = last_label.shape[0]
                     logits = model(x, edge_index, edge_attr, batch_labels, label_map, B)
                     pred = (torch.sigmoid(logits) > 0.5).long()
-                    total_correct += (pred == last_label.long()).all(dim=1).sum().item()
+                    k_train = len(model.decoders)
+                    total_correct += (pred == last_label[:, :k_train].long()).all(dim=1).sum().item()
                     total_shots += B
                     p_l = 1 - total_correct / total_shots
                     if p_l > 0 and np.sqrt((1 - p_l) / (p_l * total_shots)) < target_rel_std:

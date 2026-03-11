@@ -65,7 +65,9 @@ class BBGRUDecoder(nn.Module):
         # signal as the single-head BB-2 baseline while still allowing
         # per-observable specialisation in the output layers.
         from bb_args import BB_CODE_PARAMS
-        k = BB_CODE_PARAMS[args.code_size]["k"]
+        k_full = BB_CODE_PARAMS[args.code_size]["k"]
+        self.k_full = k_full
+        k_train = args.n_logicals if args.n_logicals is not None else k_full
         self.rnn = nn.GRU(args.embedding_features[-1], args.hidden_size,
                           num_layers=args.n_gru_layers, batch_first=True)
         dec_hidden = args.decoder_hidden_size or (args.hidden_size // 4)
@@ -75,7 +77,7 @@ class BBGRUDecoder(nn.Module):
                 nn.ReLU(),
                 nn.Linear(dec_hidden, 1),
             )
-            for _ in range(k)
+            for _ in range(k_train)
         ])
 
     # ------------------------------------------------------------------
@@ -188,8 +190,14 @@ class BBGRUDecoder(nn.Module):
 
             if bp_p_ls:
                 avg_p_l = float(np.mean(bp_p_ls))
+                k_train = len(self.decoders)
+                if k_train < self.k_full:
+                    # Approximate single-logical P_L from all-k P_L.
+                    # For small P_L: p_l_single ≈ p_l_all / k_full.
+                    avg_p_l = avg_p_l * k_train / self.k_full
+                    print(f"LSD avg P_L (all-{self.k_full}) scaled to {k_train} logicals: {avg_p_l:.6f}")
                 bp_accuracy = 1 - avg_p_l
-                print(f"BP-OSD-0 avg P_L={avg_p_l:.6f} (across {len(bp_p_ls)} error rates)")
+                print(f"LSD avg P_L={avg_p_l:.6f} (across {len(bp_p_ls)} error rates)")
 
         optim = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         epoch_offset = len(prior_history)
@@ -229,8 +237,9 @@ class BBGRUDecoder(nn.Module):
                     torch.cuda.synchronize()
                 t1 = time.perf_counter()
                 final_pred = self.forward(x, edge_index, edge_attr, batch_labels, label_map, B)
+                k_train = len(self.decoders)
                 loss = nn.functional.binary_cross_entropy_with_logits(
-                    final_pred, last_label)
+                    final_pred, last_label[:, :k_train])
                 loss.backward()
                 optim.step()
                 if self.args.device.type == 'cuda':
@@ -240,9 +249,9 @@ class BBGRUDecoder(nn.Module):
                 model_time += t2 - t1
                 epoch_loss += loss.item()
 
-                # Accuracy: all k logicals correct
+                # Accuracy: all trained logicals correct
                 pred = (torch.sigmoid(final_pred.detach()) > 0.5).long()
-                tgt  = last_label.long()
+                tgt  = last_label[:, :k_train].long()
                 epoch_acc += (pred == tgt).all(dim=1).float().mean().item()
 
             epoch_time = time.perf_counter() - t_epoch_start
@@ -314,8 +323,9 @@ class BBGRUDecoder(nn.Module):
                 final_pred = self.forward(x, edge_index, edge_attr, batch_labels, label_map, B)
                 t2 = time.perf_counter()
 
+                k_train = len(self.decoders)
                 pred = (torch.sigmoid(final_pred) > 0.5).long()
-                tgt  = last_label.long()
+                tgt  = last_label[:, :k_train].long()
                 acc_list[i] = (pred == tgt).all(dim=1).float().mean().item()
 
                 data_time  += t1 - t0
