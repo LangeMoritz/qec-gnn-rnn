@@ -180,6 +180,8 @@ if __name__ == "__main__":
                         help='Disable background data prefetching')
     parser.add_argument('--noise_model', type=str, default=None,
                         help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
+    parser.add_argument('--intermediate', action='store_true',
+                        help='(stub) Enable intermediate per-round labels — not yet implemented in train_nn.py')
 
     args_cli = parser.parse_args()
 
