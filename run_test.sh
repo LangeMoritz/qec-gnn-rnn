@@ -24,7 +24,7 @@ for d in 3 5; do
     echo "  last:         $M_LAST"
     echo "  intermediate: $M_INT"
 
-    python -u examples/test_nn.py --d "$d" --p 0.001 \
+    python -u scripts/test_nn.py --d "$d" --p 0.001 \
         ${M_LAST:+--model_last "$M_LAST"} \
         ${M_INT:+--model_intermediate "$M_INT"} \
         --out "eval_d${d}_p0.001"

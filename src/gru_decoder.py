@@ -1,5 +1,10 @@
 import torch, time, os
 import torch.nn as nn
+
+try:
+    profile
+except NameError:
+    def profile(f): return f
 from data import Dataset, BatchPrefetcher, find_optimal_batch_size
 from args import Args
 from utils import GraphConvLayer, TrainingLogger, group, standard_deviation
@@ -36,10 +41,31 @@ class GRUDecoder(nn.Module):
             nn.Sigmoid()
         )
 
+    @profile
     def embed(self, x, edge_index, edge_attr, batch_labels):
         for layer in self.embedding:
             x = layer(x, edge_index, edge_attr)
         return global_mean_pool(x, batch_labels)
+
+    @profile
+    def embed_chunks(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
+        """Return per-chunk GNN embeddings [B, g_max, embed_dim] (no RNN).
+
+        B and g_max are passed explicitly so sparse patches (where some samples
+        have no detection events) still produce the correct output shape.
+        """
+        bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
+        return group(bulk_emb, label_map, B, g_max, self.empty_embedding)
+
+    def embed_sequence(self, x, edge_index, edge_attr, batch_labels, label_map, B: int, g_max: int):
+        """Return per-chunk GRU hidden states [B, g_max, hidden_size].
+
+        B and g_max are passed explicitly so sparse patches (where some samples
+        have no detection events) still produce the correct output shape.
+        """
+        bulk = self.embed_chunks(x, edge_index, edge_attr, batch_labels, label_map, B, g_max)
+        out, _ = self.rnn(bulk)
+        return out  # [B, g_max, hidden_size]
 
     def forward(self, x, edge_index, edge_attr, batch_labels, label_map):
         bulk_emb = self.embed(x, edge_index, edge_attr, batch_labels)
