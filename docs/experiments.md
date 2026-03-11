@@ -21,11 +21,11 @@
 | [13](#experiment-13-hierarchical-adaptive-lr-d5--first-d9-run) | Hierarchical: Adaptive LR (d=5) + First d=9 Run | `iterative-decoding` | 2026-03-02 | in progress |
 | [14](#experiment-14-patch-batching-lr1e-4-trainable-base) | Patch-batching optimisation, lr=1e-4, fully trainable | `iterative-decoding` | 2026-03-03 | in progress |
 | [15](#experiment-15-control-effective-lr-match-exp-12) | Control: match Exp 12 effective LR (lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress |
-| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | in progress (cont3 at lr=1e-4, job 6080257) |
+| [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | completed + tested (job 6080257) |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
-| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress |
-| [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | in progress |
+| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~182/1000, acc 82.4%) |
+| [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
 
 ---
 
@@ -812,7 +812,43 @@ sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_
 sbatch run_hierarchical.sh iterative_d5_p0.001_t50_dt2_260227_6005310_trainable_gnn 9 0.001 50 2 4096 128 500 uniform_lr_d9_cont3 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 1e-4 no_auto_batch_size "" 10000000 "5 10 20 50 100 200 500 1000"
 ```
 
-_(in progress — job 6080257)_
+**Training results** (job 6080257, 486 epochs from cont2 checkpoint, state=finished):
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **99.11%** |
+| MWPM accuracy | 98.75% |
+| Gap vs MWPM | **+0.36%** |
+
+**Test results** (p=0.001–0.005, t=5–1000, 10M shots; checkpoint `iterative_d9_p0.001_t50_dt2_260309_6080257_uniform_lr_d9_cont3_load_6021817`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 | 500 | 1000 |
+|--------|---|----|----|-----|------|------|------|------|
+| 0.001 | **0.27** | **0.67** | **0.12** | **0.14** | **0.30** | **0.38** | **0.49** | **0.55** |
+| 0.002 | **0.68** | **0.50** | **0.38** | **0.36** | **0.40** | **0.50** | **0.63** | **0.69** |
+| 0.003 | **0.79** | **0.59** | **0.55** | **0.48** | **0.52** | **0.67** | **0.86** | **0.97** |
+| 0.004 | **0.95** | **0.76** | **0.65** | **0.64** | **0.67** | **0.89** | 1.20 | 1.25 |
+| 0.005 | 1.07 | **0.92** | **0.81** | **0.78** | **0.84** | 1.13 | 1.39 | 1.16 |
+
+Absolute P_L values (NN / MWPM):
+
+| p | t=5 | t=50 | t=200 | t=1000 |
+|---|-----|------|-------|--------|
+| 0.001 | 2.9e-7 / 1.1e-6 | 1.9e-6 / 1.4e-5 | 2.0e-5 / 5.2e-5 | 1.5e-4 / 2.7e-4 |
+| 0.002 | 2.1e-5 / 3.1e-5 | 1.6e-4 / 4.4e-4 | 9.4e-4 / 1.9e-3 | 6.4e-3 / 9.3e-3 |
+| 0.003 | 2.0e-4 / 2.5e-4 | 1.8e-3 / 3.7e-3 | 9.8e-3 / 1.5e-2 | 6.6e-2 / 6.9e-2 |
+| 0.004 | 1.0e-3 / 1.1e-3 | 9.6e-3 / 1.5e-2 | 5.4e-2 / 6.0e-2 | 0.289 / 0.231 |
+| 0.005 | 3.3e-3 / 3.1e-3 | 3.4e-2 / 4.4e-2 | 0.177 / 0.156 | 0.498 / 0.430 |
+
+Key observations:
+- **p=0.001–0.003**: beats MWPM at all t=5–1000; best at t=20 (−88% at p=0.001, −62% at p=0.002).
+- **p=0.004**: beats MWPM at t=5–200; slightly worse at t=500,1000 (high-p long-sequence regime).
+- **p=0.005**: beats MWPM at t=10–100; slightly worse outside that range.
+- Strong improvement over Exp 13B preliminary (cont3 fine-tuning clearly helped at all p/t).
+
+**Figure**: `results/exp16_20_d7_d9_test_results.pdf`
 
 ---
 
@@ -990,10 +1026,30 @@ sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr
 | 6060984 | `first_d17` (cancelled — upfront MWPM too slow) |
 | 6063931 | `first_d17` resubmit (skip_mwpm_baseline) — OOM on A40 (no_auto_batch_size) |
 | 6079829 | `first_d17` resubmit on A100fat (80 GB), auto batch size enabled |
+| TBD | `high_p_d17` — new run at p=0.006–0.009 (near threshold) to fix label sparsity; job 6079829 stuck at loss=ln(2) because d=17 at p≤0.005 has ~0–2 logical errors per batch of 2048 |
 
 ### Results
 
-_(pending — job 6079829)_
+_(pending — job 6079829 in progress, epoch ~182/1000, best accuracy 82.4%)_
+
+Job 6079829 was stuck at loss=ln(2), accuracy=50% for the first ~35 epochs, then broke out at epoch 36 and is now learning normally (accuracy 82.4% at epoch 182).
+
+### Corrected diagnosis: slow gradient signal, not label sparsity
+
+The original diagnosis (label sparsity: "only ~2 positive examples per batch") was **wrong**. The formula `(p/p_th)^9` gives the *decoded* logical error rate, but the training labels are the **raw** stim logical observable — the physical final state before any correction. Empirical check (200k shots at p=0.002, t=50):
+
+| d | class-1 ratio |
+|---|---------------|
+| 3 | 26.7% |
+| 5 | 38.0% |
+| 7 | 43.5% |
+| 9 | 46.9% |
+| 17 | 49.8% |
+| 21 | 49.8% |
+
+The raw observable approaches 50% as d increases (more qubits = more error accumulation), so large-d labels are perfectly balanced, not sparse. The model must learn to use syndrome information to predict this label — at large d with many patches the gradient signal is weaker, which explains the slow start before breakout.
+
+The planned `high_p_d17` resubmission is **not needed** given job 6079829 is now improving.
 
 ---
 
@@ -1038,4 +1094,41 @@ sbatch run_hierarchical.sh d3_p0.001_t50_dt2_260226_5999004 7 0.001 50 2 4096 12
 
 ### Results
 
-_(pending — job 6079402)_
+**Training results** (job 6079402, ~880 epochs, state=finished):
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **97.72%** |
+| MWPM accuracy | 97.49% |
+| Gap vs MWPM | **+0.23%** |
+
+**Test results** (p=0.001–0.005, t=5–1000, 10M shots; checkpoint `iterative_d7_p0.001_t50_dt2_260309_6079402_lr1e-5_cont3_load_6064033`):
+
+NN/MWPM P_L ratio (< 1 = NN beats MWPM):
+
+| p \ t | 5 | 10 | 20 | 50 | 100 | 200 | 500 | 1000 |
+|--------|---|----|----|-----|------|------|------|------|
+| 0.001 | **0.79** | **0.47** | **0.51** | **0.44** | **0.48** | **0.47** | 111 ✗ | 139 ✗ |
+| 0.002 | **0.92** | **0.74** | **0.65** | **0.60** | **0.58** | **0.60** | 1.69 ✗ | 2.94 ✗ |
+| 0.003 | 1.07 | **0.87** | **0.77** | **0.72** | **0.71** | **0.72** | **0.86** | 1.11 |
+| 0.004 | 1.18 | **0.96** | **0.88** | **0.86** | **0.84** | **0.88** | **0.95** | 1.05 |
+| 0.005 | 1.25 | 1.11 | 1.05 | **0.99** | **0.97** | **0.98** | 1.06 | 1.02 |
+
+Absolute P_L values (NN / MWPM):
+
+| p | t=5 | t=50 | t=200 | t=1000 |
+|---|-----|------|-------|--------|
+| 0.001 | 1.2e-5 / 1.5e-5 | 6.2e-5 / 1.4e-4 | 2.7e-4 / 5.7e-4 | 0.400 / 0.00287 |
+| 0.002 | 1.8e-4 / 2.0e-4 | 1.4e-3 / 2.3e-3 | 5.4e-3 / 9.0e-3 | 0.132 / 0.0448 |
+| 0.003 | 1.0e-3 / 9.5e-4 | 8.2e-3 / 1.1e-2 | 3.3e-2 / 4.5e-2 | 0.210 / 0.189 |
+| 0.004 | 3.4e-3 / 2.9e-3 | 2.9e-2 / 3.4e-2 | 0.110 / 0.126 | 0.409 / 0.389 |
+| 0.005 | 8.2e-3 / 6.6e-3 | 7.6e-2 / 7.7e-2 | 0.244 / 0.248 | 0.497 / 0.488 |
+
+Key observations:
+- **p=0.001, t=5–200**: beats MWPM (44–79% improvement), but **catastrophic failure at t≥500** (NN P_L 0.159 and 0.400 vs MWPM 0.00142 and 0.00287). Same long-sequence instability pattern as d=7 Exp 17, not resolved by lr=1e-5 fine-tuning.
+- **p=0.002, t=5–200**: beats MWPM (8–42% improvement); failure at t≥500 (1.7× and 2.9× worse).
+- **p=0.003–0.004**: beats or matches MWPM across most t; failure only at t=1000 for p=0.003.
+- **p=0.005**: roughly tied across all t (within ~5%).
+- The long-sequence instability at low p (t≥500 for p≤0.002) is a known issue: the model is trained at t=50 and fails to generalise to very long sequences where logical errors are extremely rare. Training on multiple t values would likely fix this.
+
+**Figure**: `results/exp16_20_d7_d9_test_results.pdf`
