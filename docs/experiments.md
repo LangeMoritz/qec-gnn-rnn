@@ -24,9 +24,10 @@
 | [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | completed + tested (job 6080257) |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
-| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~182/1000, acc 82.4%) |
+| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~460/1000, acc 84.3%, plateaued) |
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
 | [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | in progress (job 6094468) |
+| [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
 
 ---
 
@@ -1165,3 +1166,37 @@ sbatch run_training.sh 3 50 2 2048 256 500 0.003 1 si1000_d3_p3_ft d3_p0.001_t50
 | SLURM job | Status |
 |-----------|--------|
 | 6094468 | in progress |
+
+---
+
+## Experiment 22: d=17 fine-tune, lr=1e-5
+
+**Goal**: Fine-tune the Exp 19 d=17 checkpoint from the plateau (loss ~0.285, acc ~84.3% at ep ~460) with a lower learning rate (1e-5) to push further. Exp 19 used lr=1e-3 → 1e-4 (floor at 10%), so LR was already stuck at 1e-4 when this was started.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` (Exp 13B) |
+| Load path | `iterative_d17_p0.001_t50_dt2_260309_6079829_first_d17` (Exp 19) |
+| Distance | 17 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | auto |
+| Batches/epoch | 256 |
+| Epochs | 1000 |
+| Learning rate | 1e-5 → 1e-6 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 2048 256 1000 lr1e-5 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d17_p0.001_t50_dt2_260309_6079829_first_d17 1e-5 "" skip_mwpm_baseline
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6094523 | in progress |
