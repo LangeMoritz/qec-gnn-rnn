@@ -26,6 +26,7 @@
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 | [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~182/1000, acc 82.4%) |
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
+| [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | in progress (job 6094468) |
 
 ---
 
@@ -1132,3 +1133,35 @@ Key observations:
 - The long-sequence instability at low p (t≥500 for p≤0.002) is a known issue: the model is trained at t=50 and fails to generalise to very long sequences where logical errors are extremely rare. Training on multiple t values would likely fix this.
 
 **Figure**: `results/exp16_20_d7_d9_test_results.pdf`
+
+---
+
+## Experiment 21: SI1000 d=3 fine-tune, p=0.003
+
+**Goal**: Fine-tune the best d=3 iterative decoder (`d3_p0.001_t50_dt2_260226_5999004`, Exp 9) on SI1000 circuits at p=0.003 (matched to Google experimental detection density). This is the first step in the SI1000 → hierarchical pipeline: d=3 SI1000 → d=5 → d=7.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| d | 3 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| noise_model | SI1000 |
+| batch_size | auto |
+| n_batches | 256 |
+| epochs | 500 |
+| intermediate | yes |
+| base model | `d3_p0.001_t50_dt2_260226_5999004` |
+
+### Commands
+
+```bash
+sbatch run_training.sh 3 50 2 2048 256 500 0.003 1 si1000_d3_p3_ft d3_p0.001_t50_dt2_260226_5999004 Google-iterative "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6094468 | in progress |
