@@ -766,3 +766,82 @@ p_ij model ~2x worse than Google's RL-optimized decoder, but captures error supp
 1. Use saved DEMs to generate large synthetic training data
 2. Pretrain GNN-RNN decoder on synthetic data
 3. Fine-tune on real detection events
+
+---
+
+# SI1000 Pretraining Noise Calibration
+
+## Goal
+Choose a SI1000 noise level for pretraining that matches the bulk detection event
+density of the real experimental data, so the model sees realistic syndrome
+patterns before fine-tuning.
+
+## Google Dataset Circuits
+
+The `circuit_noisy_si1000.stim` files in the 105Q dataset use p=0.001:
+
+| Instruction | Value | SI1000 meaning |
+|---|---|---|
+| `DEPOLARIZE2(0.001)` | p | CZ(p) |
+| `DEPOLARIZE1(0.0001)` | p/10 | AnyClifford₁(p/10), Idle(p/10) |
+| `DEPOLARIZE1(0.002)` | 2p | ResonatorIdle(2p) |
+| `DEPOLARIZE1(0.001)` | p | post-M ancilla idle (extra, see below) |
+| `X_ERROR(0.002)` | 2p | Init_Z(2p) |
+| `M(0.005)` | 5p | M_Z(5p) |
+
+These circuits mostly follow the **modern (AQ2) SI1000** interpretation (M and R
+as separate operations, each with their own full noise sets), with one extra term:
+`DEPOLARIZE1(p)` applied to the measured ancilla qubits in the TICK between M and
+R. This term is not in either the old or new SI1000 definition — it models ancilla
+depolarisation during the M→R gap in the XZZX circuit structure.
+
+## Bulk Detection Event Density
+
+"Bulk" = detectors with t_min < t < t_max (excluding first and last round).
+Measured from `detection_events.b8` + `circuit_ideal.stim`, Z basis, r=50:
+
+| Distance | Experimental (Z, r50) | Suppl. Fig. S22 (all bases) |
+|---|---|---|
+| d=3 | 6.2% (range 5.3–7.5%) | 7.7% |
+| d=5 | 7.3% (range 6.8–7.9%) | 8.5% |
+| d=7 | 7.7% | 8.7% |
+
+Suppl. Fig. S22 does not specify which cycle counts the experimental averages
+come from.
+
+## Simulated Bulk Detection Rates vs p
+
+Computed by uniformly scaling all error parameters in `circuit_noisy_si1000.stim`:
+
+| Scale | p | d=3 bulk | d=5 bulk | d=7 bulk |
+|---|---|---|---|---|
+| ×1 | 0.001 | ~3.1% | ~2.9% | ~3.5% |
+| ×2 | 0.002 | ~5.6% | ~6.1% | ~6.7% |
+| ×3 | 0.003 | ~8.1% | ~8.9% | ~9.7% |
+| ×4 | 0.004 | ~10.4% | ~11.3% | ~12.5% |
+
+AQ2 pretrained at p=0.004 (×4), which overshoots the experimental detection
+density by ~1.5–2×. The closest match to the raw experimental values is p≈0.002;
+p=0.003 sits between the Z-basis measurements and the Suppl. Fig. S22 all-bases
+averages.
+
+## Chosen Pretraining Level: p = 0.003
+
+We use **p=0.003 (×3 scaling)** for pretraining. Scaled circuits are saved as
+`circuit_noisy_si1000_p3.stim` for all 14 patches, Z basis, r=50:
+
+```
+p_ij_from_google_data/2024_google_105Q_surface_code_d3_d5_d7/
+  d{3,5,7}_*/Z/r50/circuit_noisy_si1000_p3.stim
+```
+
+Scaling map (×3 from p=0.001 base):
+
+| Original | Scaled (p=0.003) |
+|---|---|
+| `DEPOLARIZE1(0.0001)` | `DEPOLARIZE1(0.0003)` |
+| `DEPOLARIZE1(0.001)` | `DEPOLARIZE1(0.003)` |
+| `DEPOLARIZE1(0.002)` | `DEPOLARIZE1(0.006)` |
+| `DEPOLARIZE2(0.001)` | `DEPOLARIZE2(0.003)` |
+| `M(0.005)` | `M(0.015)` |
+| `X_ERROR(0.002)` | `X_ERROR(0.006)` |
