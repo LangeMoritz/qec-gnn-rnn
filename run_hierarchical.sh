@@ -10,7 +10,7 @@ module load PyTorch-Geometric/2.5.0-foss-2023a-PyTorch-2.1.2-CUDA-12.1.1
 source .venv/bin/activate
 
 # auto_batch_size is on by default; pass --no_auto_batch_size explicitly if needed
-# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]  [trainable_base]  [random_base]  [load_path]  [lr]  [no_auto_batch_size]  [skip_mwpm_baseline]  [test_shots]  [test_rounds]
+# sbatch run_hierarchical.sh  base_model  d  p  t  dt  batch  nbatch  epochs  [note]  [wandb_project]  [p_list]  [test]  [trainable_base]  [random_base]  [load_path]  [lr]  [no_auto_batch_size]  [skip_mwpm_baseline]  [test_shots]  [test_rounds]  [noise_model]
 # sbatch run_hierarchical.sh  d3_p0.001_t50_dt2_260224_5979931  5  0.001  50  2  2048  244  1000  ""  GNN-iterative-decoding  "0.001 0.002 0.003 0.004 0.005"  ""  trainable_base  ""  ""  1e-4
 
 python -u scripts/train_hierarchical.py \
@@ -33,4 +33,5 @@ python -u scripts/train_hierarchical.py \
     $([[ "${17}" == "no_auto_batch_size" ]] && echo "--no_auto_batch_size") \
     $([[ "${18}" == "skip_mwpm_baseline" ]] && echo "--skip_mwpm_baseline") \
     ${19:+--test_shots "${19}"} \
-    ${20:+--test_rounds ${20}}
+    ${20:+--test_rounds ${20}} \
+    ${21:+--noise_model "${21}"}

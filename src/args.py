@@ -34,3 +34,4 @@ class Args:
     n_gru_layers: int = 4
     log_wandb: bool = False
     wandb_project: str = "GNN-RNN-google"
+    noise_model: str | None = None  # 'SI1000' → load circuit from circuits_ZXXZ/
