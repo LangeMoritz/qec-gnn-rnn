@@ -209,7 +209,7 @@ sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003
 
 ## Exp BB-6: Single-logical training, [[72,12,6]]
 
-**Status**: RUNNING — job 6092964
+**Status**: RUNNING — job 6094495 (resubmit after crash fix)
 
 **Goal**: Train only on logical 0 (n_logicals=1) to establish a single-logical baseline.
 Simpler target: model only needs to decode 1 of 12 logicals correctly.
@@ -225,7 +225,8 @@ Compares against scaled LSD baseline: P_L_single ≈ P_L_all / 12.
 
 **Commands**:
 ```bash
-sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256 1   # job 6092964
+sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256 1   # job 6092964 (CRASHED: auto-tuner label shape mismatch)
+sbatch run_bb_training.sh 72 6 0.001 3000 GNN-RNN-BB-codes "" "0.001 0.002 0.003" 1024 "4 64 128 256 512 1024" 1e-3 2 test 4 256 1   # job 6094495 (fix: last_label[:, :k_train] in auto-tuner)
 ```
 
 ---
