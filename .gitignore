@@ -19,6 +19,7 @@ __pycache__/
 *.pdf
 *.b8
 *.stim
+!circuits_ZXXZ/*.stim
 *.json
 !bposd_cache.json
 *.png

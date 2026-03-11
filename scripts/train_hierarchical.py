@@ -123,6 +123,8 @@ if __name__ == "__main__":
                         help='Max shots per (p, t) for adaptive testing')
     parser.add_argument('--skip_mwpm_baseline', action='store_true',
                         help='Skip upfront MWPM baseline computation (saves time for large d)')
+    parser.add_argument('--noise_model', type=str, default=None,
+                        help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
     cli = parser.parse_args()
 
     device = torch.device(
@@ -182,6 +184,7 @@ if __name__ == "__main__":
         batch_size=cli.batch_size,
         n_batches=cli.n_batches,
         n_epochs=cli.n_epochs,
+        noise_model=cli.noise_model,
     )
     args.device = device
 

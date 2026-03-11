@@ -178,6 +178,8 @@ if __name__ == "__main__":
                         help='Disable auto-tuning of batch_size at training start')
     parser.add_argument('--no_prefetch', action='store_true',
                         help='Disable background data prefetching')
+    parser.add_argument('--noise_model', type=str, default=None,
+                        help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
 
     args_cli = parser.parse_args()
 
@@ -203,6 +205,7 @@ if __name__ == "__main__":
         wandb_project=args_cli.wandb_project,
         prefetch=not args_cli.no_prefetch,
         auto_batch_size=args_cli.auto_batch_size,
+        noise_model=args_cli.noise_model,
     )
     date = datetime.now().strftime("%y%m%d")
     job_id = os.environ.get("SLURM_JOB_ID", "")
