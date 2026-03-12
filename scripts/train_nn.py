@@ -34,6 +34,9 @@ def find_max_inference_batch_size(decoder, args, t, error_rate=None):
         if candidate < 1:
             return False
         try:
+            # For SI1000, circuit files only exist for specific t values.
+            # Use the standard generated circuit for memory probing (structure is
+            # similar enough; accuracy doesn't matter here).
             test_args = Args(
                 distance=args.distance, error_rate=probe_p,
                 t=t, dt=args.dt, batch_size=candidate,
@@ -82,7 +85,6 @@ def run_test(decoder, args, test_rounds, test_shots):
     Returns: {p: {t: {"mwpm": {...}, "nn": {...}}}}
     """
     import pymatching
-    from utils import standard_deviation
 
     error_rates = args.error_rates if args.error_rates else [args.error_rate]
     target_rel_std = 0.01
@@ -118,6 +120,7 @@ def run_test(decoder, args, test_rounds, test_shots):
                 hidden_size=args.hidden_size,
                 n_gru_layers=args.n_gru_layers,
                 prefetch=False,
+                noise_model=args.noise_model,
             )
             dataset = Dataset(test_args)
 
@@ -168,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument('--load_path', type=str, default=None)
     parser.add_argument('--note', type=str, default='')
     parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--wandb_project', type=str, default='GNN-RNN-google')
+    parser.add_argument('--wandb_project', type=str, default='GNN-google-data')
     parser.add_argument('--test', action='store_true',
                         help='Run evaluation after training')
     parser.add_argument('--test_rounds', type=int, nargs='+',
@@ -182,6 +185,13 @@ if __name__ == "__main__":
                         help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
     parser.add_argument('--intermediate', action='store_true',
                         help='(stub) Enable intermediate per-round labels — not yet implemented in train_nn.py')
+    parser.add_argument('--hidden_size', type=int, default=256,
+                        help='GRU hidden size; also sets the final GNN output dim if --embedding_features not given')
+    parser.add_argument('--embedding_features', type=int, nargs='+', default=None,
+                        help='Full GNN layer sizes including input, e.g. --embedding_features 3 64 128 256 512'
+                             ' (overrides --hidden_size for the GNN)')
+    parser.add_argument('--large', action='store_true',
+                        help='Use larger GNN: embedding_features=[3,128,512], hidden_size=512')
 
     args_cli = parser.parse_args()
 
@@ -200,8 +210,8 @@ if __name__ == "__main__":
         batch_size=args_cli.batch_size,
         n_batches=args_cli.n_batches,
         n_epochs=args_cli.n_epochs,
-        embedding_features=[3, 64, 256],
-        hidden_size=256,
+        embedding_features=args_cli.embedding_features or [3, 64, args_cli.hidden_size],
+        hidden_size=args_cli.hidden_size,
         n_gru_layers=4,
         log_wandb=args_cli.wandb,
         wandb_project=args_cli.wandb_project,
