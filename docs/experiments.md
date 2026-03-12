@@ -26,8 +26,10 @@
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
 | [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~460/1000, acc 84.3%, plateaued) |
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
-| [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | in progress (job 6094580; 6094468 crashed) |
+| [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | completed (job 6094580) |
 | [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
+| [23](#experiment-23-si1000-d5-hierarchical-from-exp-21) | SI1000 d=5 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress |
+| [24](#experiment-24-si1000-d7-hierarchical-from-exp-21) | SI1000 d=7 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress |
 
 ---
 
@@ -1169,7 +1171,85 @@ sbatch run_training.sh 3 50 2 2048 256 500 0.003 1 si1000_d3_p3_ft d3_p0.001_t50
 
 **Fix**: Added `--intermediate` as a stub `action='store_true'` to `train_nn.py` (currently ignored; intermediate label mode not yet implemented in the base decoder). Re-submitted as job 6094580.
 
-| 6094580 | in progress |
+| 6094580 | **completed** — 500 epochs, best acc 97.22%, MWPM 96.60% |
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **97.22%** |
+| MWPM accuracy | 96.60% |
+| Gap vs MWPM | **+0.62%** |
+| Epochs | 500 |
+| Checkpoint | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` |
+
+---
+
+## Experiment 23: SI1000 d=5 hierarchical, from Exp 21
+
+**Goal**: Train the hierarchical d=5 decoder on SI1000 circuits using the Exp 21 SI1000 d=3 base. Second step in the SI1000 → hierarchical pipeline.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` (Exp 21) |
+| d | 5 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004 5 0.003 50 2 4096 128 1000 si1000_d5 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| TBD | in progress |
+
+---
+
+## Experiment 24: SI1000 d=7 hierarchical, from Exp 21
+
+**Goal**: Train the hierarchical d=7 decoder (3×3 patches of d=3) on SI1000 circuits using the Exp 21 SI1000 d=3 base. Parallel to Exp 23.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` (Exp 21) |
+| d | 7 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004 7 0.003 50 2 4096 128 1000 si1000_d7 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| TBD | in progress |
 
 ---
 
