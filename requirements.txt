@@ -1,15 +1,16 @@
-matplotlib==3.10.0 
-numpy==1.26.4 
-torch==2.5.1 
-stim==1.14.0
+matplotlib==3.10.3
+numpy==2.2.6
+torch==2.7.0
+stim==1.15.0
 torch-geometric==2.6.1
-torchvision==0.20.1
-pillow==11.1.0
+torchvision==0.22.0
+pillow==11.2.1
 ipykernel==6.29.5
-scipy==1.15.2
-pymatching==2.2.1
---find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
-# --find-links https://data.pyg.org/whl/torch-2.5.1+cpu.html # Use this instead of above line if running on cpu.
-torch-cluster==1.6.3
+scipy==1.15.3
+pymatching==2.2.2
+wandb==0.24.2
+scienceplots==2.1.1
 tqdm==4.67.1
-
+--find-links https://data.pyg.org/whl/torch-2.7.0+cu121.html
+# --find-links https://data.pyg.org/whl/torch-2.7.0+cpu.html # Use this instead of above line if running on cpu.
+torch-cluster==1.6.3

@@ -348,10 +348,10 @@ Warmup cost: ~30-60s (6 candidates × ~5-10s each). The bigger lever is **batch_
 
 ```bash
 # Auto-tune example:
-python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
+python scripts/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --auto_batch_size
 
 # Disable prefetch:
-python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
+python scripts/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
 ```
 
 ---
@@ -360,7 +360,7 @@ python examples/train_nn.py --d 3 --p 0.005 --t 10 --dt 2 --no_prefetch
 
 ## Model Naming
 
-Format: `d{d}_p{p}_t{t}_dt{dt}_{mode}_{date}_{run_id}[_{note}][_load_{parent_run_id}]`
+Format: `d{d}_p{p}_t{t}_dt{dt}_{date}_{run_id}[_{note}][_load_{parent_run_id}]`
 
 - **Cluster (SLURM)**: `run_id` = SLURM job ID (e.g. `12345678`)
 - **Local (MacBook)**: `run_id` = time `HHMMSS` (e.g. `102508`)
@@ -406,13 +406,13 @@ Pass `--test` to `train_nn.py` to run evaluation after training:
 
 ```bash
 # Via run_training.sh (12th arg enables test):
-sbatch run_training.sh 3 49 2 2048 256 200 0.001 mpp baseline "" "" test
+sbatch run_training.sh 3 50 2 2048 256 200 0.001 "" baseline "" "" test
 
 # Direct:
-python examples/train_nn.py --d 3 --t 49 --dt 2 --intermediate --test
+python scripts/train_nn.py --d 3 --t 50 --dt 2 --intermediate --test
 ```
 
-Standalone evaluation is also available via `examples/test_nn.py`.
+Standalone evaluation is also available via `scripts/test_nn.py`.
 
 ---
 
@@ -490,7 +490,7 @@ For a d=5 code split at its center into TL/TR/BL/BR patches:
 | BL | bottom-left; its **north** = d=5 center cut | `d3_north` |
 | BR | bottom-right; its **north** = d=5 center cut | `d3_north` |
 
-Each base model runs frozen and produces a pooled chunk embedding `[B, g_max, H]`
+Each base model contributes its GNN (trainable); the base GRU is frozen and unused in the hierarchical forward pass. It produces a pooled chunk embedding `[B, g_max, H]`
 whose representation is specialized for its assigned boundary direction.
 
 ### Meta-CNN + meta-GRU
@@ -561,8 +561,7 @@ For `d5_north`: all 4 d=3 patches use `d3_north` (each reports its north boundar
 crossing); the meta-CNN is trained with label = parity of X errors on d=5's top
 data-qubit row. For `d5_south`: same with `d3_south` and the bottom row label.
 
-The d=3 base models remain frozen. Only the meta-CNN weights differ between
-`d5_north`, `d5_south`, and the center-logical d=5 decoder.
+The d=3 base model GRUs remain frozen (unused); their GNNs are trainable. Only the meta-CNN weights differ between `d5_north`, `d5_south`, and the center-logical d=5 decoder.
 
 ### d=9 patch assignment (boundary-aware, future)
 
@@ -576,8 +575,7 @@ The d=3 base models remain frozen. Only the meta-CNN weights differ between
      → d=9 logical prediction
 ```
 
-All d=3 and d=5 weights frozen. New trainable parameters: one Conv2d + one
-meta-GRU + one decoder head — same small module as at d=5.
+d=3 GRUs and d=5 meta-GRUs frozen (unused); d=3 GNNs and d=5 Conv2d remain trainable. New trainable parameters: one Conv2d + one meta-GRU + one decoder head — same small module as at d=5.
 
 ### General recursion
 
@@ -617,12 +615,12 @@ x,y ∈ {0,2,4,6} after renorm; 240/240 d=5 detectors covered.
 
 ## Model Architecture Summary
 
-| Level | Trainable | Frozen below | Input |
-|-------|-----------|--------------|-------|
-| d=3 base (`d3_north`, `d3_south`) | GNN + GRU + head | — | raw detectors |
-| d=5 meta (center / north / south) | Conv2d + ReLU + GRU + head | d=3 | 4 × H-dim embeddings |
-| d=9 meta | Conv2d + ReLU + GRU + head | d=3, d=5 | 4 × H-dim embeddings |
-| d=17 meta | Conv2d + ReLU + GRU + head | all below | 4 × H-dim embeddings |
+| Level | Trainable | Frozen (unused) | Input |
+|-------|-----------|-----------------|-------|
+| d=3 base | GNN + GRU + head | — | raw detectors |
+| d=5 meta | d=3 GNN + Conv2d + meta-GRU + head | d=3 GRU | 4 × d=3 embeddings |
+| d=9 meta | d=3 GNN + d=5 Conv2d + Conv2d + meta-GRU + head | d=3 GRU, d=5 meta-GRU | 4 × d=5 embeddings |
+| d=17 meta | d=3 GNN + d=5/d=9 Conv2d + Conv2d + meta-GRU + head | d=3 GRU, d=5/d=9 meta-GRUs | 4 × d=9 embeddings |
 
 ---
 
