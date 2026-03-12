@@ -28,8 +28,8 @@
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
 | [21](#experiment-21-si1000-d3-fine-tune-p0003) | SI1000 d=3 fine-tune from Exp 9 base, p=0.003 | `iterative-decoding` | 2026-03-11 | completed (job 6094580) |
 | [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
-| [23](#experiment-23-si1000-d5-hierarchical-from-exp-21) | SI1000 d=5 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress |
-| [24](#experiment-24-si1000-d7-hierarchical-from-exp-21) | SI1000 d=7 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress |
+| [23](#experiment-23-si1000-d5-hierarchical-from-exp-21) | SI1000 d=5 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress (job 6097502) |
+| [24](#experiment-24-si1000-d7-hierarchical-from-exp-21) | SI1000 d=7 hierarchical from Exp 21 d=3 base | `iterative-decoding` | 2026-03-12 | in progress (job 6097503) |
 
 ---
 
@@ -1215,7 +1215,7 @@ sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load
 
 | SLURM job | Status |
 |-----------|--------|
-| TBD | in progress |
+| 6097502 | in progress |
 
 ---
 
@@ -1249,7 +1249,7 @@ sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load
 
 | SLURM job | Status |
 |-----------|--------|
-| TBD | in progress |
+| 6097503 | in progress |
 
 ---
 
