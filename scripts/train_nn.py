@@ -97,14 +97,8 @@ def run_test(decoder, args, test_rounds, test_shots):
         print(f"{'='*60}")
 
         for t in test_rounds:
-            # Find largest batch size that fits in memory for this (p, t).
-            # Probe with the current p so sizing is exact for each rate.
             if args.device.type == 'cuda':
                 test_batch_size = find_max_inference_batch_size(decoder, args, t, error_rate=p)
-                # The multi-layer cuDNN GRU reserves O(n_layers * B * seq * hidden)
-                # memory in one contiguous block.  The probe runs in clean memory and
-                # may find a batch size that exhausts fragmented memory during the
-                # actual test.  Dividing by n_gru_layers keeps peak usage in line.
                 test_batch_size = max(1, test_batch_size // args.n_gru_layers)
                 torch.cuda.empty_cache()
             else:

@@ -124,7 +124,7 @@ if __name__ == "__main__":
     parser.add_argument('--skip_mwpm_baseline', action='store_true',
                         help='Skip upfront MWPM baseline computation (saves time for large d)')
     parser.add_argument('--noise_model', type=str, default=None,
-                        help='Noise model: SI1000 loads circuit from circuits_ZXXZ/')
+                        help='Noise model: SI1000 loads Google hardware circuit (×3 scaled) from p_ij_from_google_data/')
     cli = parser.parse_args()
 
     device = torch.device(

@@ -34,4 +34,4 @@ class Args:
     n_gru_layers: int = 4
     log_wandb: bool = False
     wandb_project: str = "GNN-RNN-train-all-times"
-    noise_model: str | None = None  # 'SI1000' → load circuit from circuits_ZXXZ/
+    noise_model: str | None = None  # 'SI1000' → load Google hardware circuit (×3 scaled) from p_ij_from_google_data/
