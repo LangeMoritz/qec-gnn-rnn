@@ -24,8 +24,15 @@
 | [16](#experiment-16-d9-continued-training-from-exp-13b) | d=9 continued training from Exp 13B (3000 epochs, lr=1e-3, batch=4096) | `iterative-decoding` | 2026-03-04 | completed + tested (job 6080257) |
 | [17](#experiment-17-hierarchical-decoder-d7-3x3-patches) | Hierarchical Decoder d=7 (3×3 patches of d=3), Exp 15 settings | `iterative-decoding` | 2026-03-04 | completed + tested |
 | [18](#experiment-18-d7-continued-training-lr1e-4) | d=7 continued from Exp 17 with lr=1e-4 | `iterative-decoding` | 2026-03-05 | in progress |
-| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~182/1000, acc 82.4%) |
+| [19](#experiment-19-d17-first-run-from-exp-13b) | d=17 first run (from Exp 13B d=9 base) | `iterative-decoding` | 2026-03-06 | in progress (ep ~460/1000, acc 84.3%, plateaued) |
 | [20](#experiment-20-d7-continued-training-3000-epochs-lr1e-4) | d=7 continued from Exp 18 (3000 epochs, lr=1e-4) | `iterative-decoding` | 2026-03-06 | completed + tested (job 6079402) |
+| [~~21~~](#experiment-21-si1000-d3-fine-tune-p0003) | ~~SI1000 d=3 fine-tune from Exp 9 base, p=0.003~~ | `iterative-decoding` | 2026-03-11 | **INVALID** — trained on circuits_ZXXZ, not Google hardware circuits |
+| [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
+| [~~23~~](#experiment-23-si1000-d5-hierarchical-from-exp-21) | ~~SI1000 d=5 hierarchical from Exp 21 d=3 base~~ | `iterative-decoding` | 2026-03-12 | **CANCELLED** — based on invalid Exp 21; also used wrong p_list |
+| [~~24~~](#experiment-24-si1000-d7-hierarchical-from-exp-21) | ~~SI1000 d=7 hierarchical from Exp 21 d=3 base~~ | `iterative-decoding` | 2026-03-12 | **CANCELLED** — based on invalid Exp 21; also used wrong p_list |
+| [25](#experiment-25-si1000-d3-retrain-google-hardware-circuits) | SI1000 d=3 retrain on Google hardware circuits, 700 epochs | `iterative-decoding` | 2026-03-12 | completed (job 6098116) |
+| [26](#experiment-26-si1000-d5-hierarchical-from-exp-25) | SI1000 d=5 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | in progress |
+| [27](#experiment-27-si1000-d7-hierarchical-from-exp-25) | SI1000 d=7 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | in progress |
 
 ---
 
@@ -1132,3 +1139,267 @@ Key observations:
 - The long-sequence instability at low p (t≥500 for p≤0.002) is a known issue: the model is trained at t=50 and fails to generalise to very long sequences where logical errors are extremely rare. Training on multiple t values would likely fix this.
 
 **Figure**: `results/exp16_20_d7_d9_test_results.pdf`
+
+---
+
+## Experiment 21: SI1000 d=3 fine-tune, p=0.003
+
+**Goal**: Fine-tune the best d=3 iterative decoder (`d3_p0.001_t50_dt2_260226_5999004`, Exp 9) on SI1000 circuits at p=0.003 (matched to Google experimental detection density). This is the first step in the SI1000 → hierarchical pipeline: d=3 SI1000 → d=5 → d=7.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| d | 3 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| noise_model | SI1000 |
+| batch_size | auto |
+| n_batches | 256 |
+| epochs | 500 |
+| intermediate | yes |
+| base model | `d3_p0.001_t50_dt2_260226_5999004` |
+
+### Commands
+
+```bash
+sbatch run_training.sh 3 50 2 2048 256 500 0.003 1 si1000_d3_p3_ft d3_p0.001_t50_dt2_260226_5999004 Google-iterative "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6094468 | **crashed** — `unrecognized arguments: --intermediate` (flag missing from `train_nn.py`) |
+
+**Fix**: Added `--intermediate` as a stub `action='store_true'` to `train_nn.py` (currently ignored; intermediate label mode not yet implemented in the base decoder). Re-submitted as job 6094580.
+
+| 6094580 | **completed** — 500 epochs, best acc 97.22%, MWPM 96.60% |
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Best accuracy | **97.22%** |
+| MWPM accuracy | 96.60% |
+| Gap vs MWPM | **+0.62%** |
+| Epochs | 500 |
+| Checkpoint | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` |
+
+---
+
+## Experiment 23: SI1000 d=5 hierarchical, from Exp 21
+
+**Goal**: Train the hierarchical d=5 decoder on SI1000 circuits using the Exp 21 SI1000 d=3 base. Second step in the SI1000 → hierarchical pipeline.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` (Exp 21) |
+| d | 5 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004 5 0.003 50 2 4096 128 1000 si1000_d5 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6097502 | **CANCELLED** — based on invalid Exp 21 (wrong circuits) |
+
+---
+
+## Experiment 24: SI1000 d=7 hierarchical, from Exp 21
+
+**Goal**: Train the hierarchical d=7 decoder (3×3 patches of d=3) on SI1000 circuits using the Exp 21 SI1000 d=3 base. Parallel to Exp 23.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004` (Exp 21) |
+| d | 7 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260311_6094580_si1000_d3_p3_ft_load_5999004 7 0.003 50 2 4096 128 1000 si1000_d7 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6097503 | **CANCELLED** |
+
+---
+
+## Experiment 25: SI1000 d=3 retrain on Google hardware circuits, 700 epochs
+
+**Goal**: Redo Exp 21 correctly — fine-tune the best d=3 iterative decoder on the actual Google hardware SI1000 circuits (`circuit_noisy_si1000_p3.stim`, ×3 scaled to match experimental detection density ~6–8%). Exp 21 was invalid: it loaded from `circuits_ZXXZ/` (synthetic), not the Google hardware topology. This is the first step in the corrected SI1000 → hierarchical pipeline.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| d | 3 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| noise_model | SI1000 (now loads `p_ij_from_google_data/.../d3_at_q2_7/Z/r50/circuit_noisy_si1000_p3.stim`) |
+| batch_size | auto |
+| n_batches | 256 |
+| epochs | 700 |
+| base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+
+### Commands
+
+```bash
+sbatch run_training.sh 3 50 2 2048 256 700 0.003 1 si1000_d3_p3_ft d3_p0.001_t50_dt2_260226_5999004 Google-iterative "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6098116 | **completed** — 700 epochs |
+
+### Results
+
+**Training results** (700 epochs on synthetic data from Google hardware SI1000 circuit, MWPM ≈ 77.5%):
+
+| Metric | Value |
+|--------|-------|
+| Final accuracy | **82.9%** |
+| MWPM accuracy | 77.5% |
+| Gap vs MWPM | **+5.4%** |
+| NN P_L | ~17.1% |
+| MWPM P_L | ~22.5% |
+| Relative P_L reduction | **~24%** |
+| Epochs | 700 |
+| Checkpoint | `d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004` |
+
+The lower absolute accuracy vs Exp 21 (82.9% vs 97.2%) reflects the higher effective error rate of the Google hardware circuit at ×3 scaling — MWPM P_L is ~22.5% vs ~3.4% in Exp 21. The model learns the hardware noise topology and beats MWPM by ~24% relative. This is the correct d=3 base for fine-tuning on real Google detection events (next: `finetune_google_patch.py`).
+
+---
+
+## Experiment 26: SI1000 d=5 hierarchical, from Exp 25
+
+**Goal**: Redo Exp 23 correctly — train the hierarchical d=5 decoder on the Google hardware SI1000 circuit (`circuit_noisy_si1000_p3.stim`) using the Exp 25 d=3 base. Exp 23 was cancelled because it used the invalid Exp 21 base (wrong circuits).
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004` (Exp 25) |
+| d | 5 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 (Google hardware d=5 circuit) |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004 5 0.003 50 2 4096 128 1000 si1000_d5 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| TBD | in progress |
+
+---
+
+## Experiment 27: SI1000 d=7 hierarchical, from Exp 25
+
+**Goal**: Redo Exp 24 correctly — train the hierarchical d=7 decoder (3×3 patches of d=3, `ThreeByThreeHierarchicalDataset`) on the Google hardware SI1000 circuit using the Exp 25 d=3 base.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004` (Exp 25) |
+| d | 7 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| p_list | 0.001, 0.003, 0.005 |
+| noise_model | SI1000 (Google hardware d=7 circuit) |
+| batch_size | 4096 (no auto) |
+| n_batches | 128 |
+| epochs | 1000 |
+| lr | 1e-3 |
+| GNN trainable | yes |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004 7 0.003 50 2 4096 128 1000 si1000_d7 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| TBD | in progress |
+
+---
+
+## Experiment 22: d=17 fine-tune, lr=1e-5
+
+**Goal**: Fine-tune the Exp 19 d=17 checkpoint from the plateau (loss ~0.285, acc ~84.3% at ep ~460) with a lower learning rate (1e-5) to push further. Exp 19 used lr=1e-3 → 1e-4 (floor at 10%), so LR was already stuck at 1e-4 when this was started.
+**Branch**: `iterative-decoding` | **Script**: `run_hierarchical.sh` | **Wandb**: `GNN-iterative-decoding`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9` (Exp 13B) |
+| Load path | `iterative_d17_p0.001_t50_dt2_260309_6079829_first_d17` (Exp 19) |
+| Distance | 17 |
+| Rounds (t) | 50 |
+| dt | 2 |
+| p values | 0.001–0.005 (5 values) |
+| Batch size | auto |
+| Batches/epoch | 256 |
+| Epochs | 1000 |
+| Learning rate | 1e-5 → 1e-6 (0.95^ep, floor at 10%) |
+| GNN trainable | yes (fully trainable) |
+| GPU | A40 (Alvis) |
+
+### Commands
+
+```bash
+sbatch run_hierarchical.sh iterative_d9_p0.001_t50_dt2_260302_6021817_uniform_lr_d9 17 0.001 50 2 2048 256 1000 lr1e-5 GNN-iterative-decoding "0.001 0.002 0.003 0.004 0.005" test trainable_base "" iterative_d17_p0.001_t50_dt2_260309_6079829_first_d17 1e-5 "" skip_mwpm_baseline
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6094523 | in progress |
