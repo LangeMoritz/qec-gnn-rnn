@@ -30,9 +30,10 @@
 | [22](#experiment-22-d17-fine-tune-lr1e-5) | d=17 fine-tune from Exp 19 checkpoint, lr=1e-5 | `iterative-decoding` | 2026-03-11 | in progress (job 6094523) |
 | [~~23~~](#experiment-23-si1000-d5-hierarchical-from-exp-21) | ~~SI1000 d=5 hierarchical from Exp 21 d=3 base~~ | `iterative-decoding` | 2026-03-12 | **CANCELLED** — based on invalid Exp 21; also used wrong p_list |
 | [~~24~~](#experiment-24-si1000-d7-hierarchical-from-exp-21) | ~~SI1000 d=7 hierarchical from Exp 21 d=3 base~~ | `iterative-decoding` | 2026-03-12 | **CANCELLED** — based on invalid Exp 21; also used wrong p_list |
-| [25](#experiment-25-si1000-d3-retrain-google-hardware-circuits) | SI1000 d=3 retrain on Google hardware circuits, 700 epochs | `iterative-decoding` | 2026-03-12 | completed (job 6098116) |
-| [26](#experiment-26-si1000-d5-hierarchical-from-exp-25) | SI1000 d=5 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | in progress |
-| [27](#experiment-27-si1000-d7-hierarchical-from-exp-25) | SI1000 d=7 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | in progress |
+| [~~25~~](#experiment-25-si1000-d3-retrain-google-hardware-circuits) | ~~SI1000 d=3 retrain on Google hardware circuits, 700 epochs~~ | `iterative-decoding` | 2026-03-12 | **NO MODEL SAVED** — bug: best_accuracy seeded from prior history, model never saved |
+| [26](#experiment-26-si1000-d5-hierarchical-from-exp-25) | SI1000 d=5 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | **CANCELLED** — Exp 25 model missing; waiting for Exp 28 |
+| [27](#experiment-27-si1000-d7-hierarchical-from-exp-25) | SI1000 d=7 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | **CANCELLED** — Exp 25 model missing; waiting for Exp 28 |
+| [28](#experiment-28-si1000-d3-rerun-1000-epochs) | SI1000 d=3 rerun (fix save bug), 1000 epochs | `iterative-decoding` | 2026-03-13 | in progress |
 
 ---
 
@@ -1300,7 +1301,9 @@ sbatch run_training.sh 3 50 2 2048 256 700 0.003 1 si1000_d3_p3_ft d3_p0.001_t50
 | Epochs | 700 |
 | Checkpoint | `d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004` |
 
-The lower absolute accuracy vs Exp 21 (82.9% vs 97.2%) reflects the higher effective error rate of the Google hardware circuit at ×3 scaling — MWPM P_L is ~22.5% vs ~3.4% in Exp 21. The model learns the hardware noise topology and beats MWPM by ~24% relative. This is the correct d=3 base for fine-tuning on real Google detection events (next: `finetune_google_patch.py`).
+The lower absolute accuracy vs Exp 21 (82.9% vs 97.2%) reflects the higher effective error rate of the Google hardware circuit at ×3 scaling — MWPM P_L is ~22.5% vs ~3.4% in Exp 21. The model learns the hardware noise topology and beats MWPM by ~24% relative.
+
+**⚠ Model file was NOT saved.** Bug in `gru_decoder.train_model`: `best_accuracy` was seeded from the loaded checkpoint's prior history (p=0.001 run, best acc ~99%), which the SI1000 run's 82.9% never exceeded. Fix: always start `best_accuracy = 0` (committed 2ff8d58). Rerun as **Exp 28** (1000 epochs).
 
 ---
 
@@ -1334,7 +1337,7 @@ sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load
 
 | SLURM job | Status |
 |-----------|--------|
-| TBD | in progress |
+| 6106625 | **CANCELLED** — Exp 25 model missing |
 
 ---
 
@@ -1364,6 +1367,37 @@ sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load
 
 ```bash
 sbatch run_hierarchical.sh d3_p0.003_t50_dt2_260312_6098116_si1000_d3_p3_ft_load_5999004 7 0.003 50 2 4096 128 1000 si1000_d7 Google-iterative "0.001 0.003 0.005" test trainable_base "" "" 1e-3 no_auto_batch_size "" "" "" SI1000
+```
+
+| SLURM job | Status |
+|-----------|--------|
+| 6106626 | **CANCELLED** — Exp 25 model missing |
+
+---
+
+## Experiment 28: SI1000 d=3 rerun, 1000 epochs
+
+**Goal**: Rerun Exp 25 with the model-save bug fixed (`best_accuracy` now resets to 0) and extended to 1000 epochs for a stronger d=3 base before hierarchical d=5/d=7 training. Identical setup to Exp 25.
+**Branch**: `iterative-decoding` | **Script**: `run_training.sh` | **Wandb**: `Google-iterative`
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| d | 3 |
+| t | 50 |
+| dt | 2 |
+| p | 0.003 |
+| noise_model | SI1000 (Google hardware circuit) |
+| batch_size | auto |
+| n_batches | 256 |
+| epochs | 1000 |
+| base model | `d3_p0.001_t50_dt2_260226_5999004` (Exp 9) |
+
+### Commands
+
+```bash
+sbatch run_training.sh 3 50 2 2048 256 1000 0.003 1 si1000_d3_p3_ft d3_p0.001_t50_dt2_260226_5999004 Google-iterative "" "" SI1000
 ```
 
 | SLURM job | Status |
