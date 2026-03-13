@@ -33,7 +33,7 @@
 | [~~25~~](#experiment-25-si1000-d3-retrain-google-hardware-circuits) | ~~SI1000 d=3 retrain on Google hardware circuits, 700 epochs~~ | `iterative-decoding` | 2026-03-12 | **NO MODEL SAVED** — bug: best_accuracy seeded from prior history, model never saved |
 | [26](#experiment-26-si1000-d5-hierarchical-from-exp-25) | SI1000 d=5 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | **CANCELLED** — Exp 25 model missing; waiting for Exp 28 |
 | [27](#experiment-27-si1000-d7-hierarchical-from-exp-25) | SI1000 d=7 hierarchical from Exp 25 d=3 base | `iterative-decoding` | 2026-03-13 | **CANCELLED** — Exp 25 model missing; waiting for Exp 28 |
-| [28](#experiment-28-si1000-d3-rerun-1000-epochs) | SI1000 d=3 rerun (fix save bug), 1000 epochs | `iterative-decoding` | 2026-03-13 | in progress |
+| [28](#experiment-28-si1000-d3-rerun-1000-epochs) | SI1000 d=3 rerun (fix save bug), 1000 epochs | `iterative-decoding` | 2026-03-13 | in progress (job 6107829) |
 
 ---
 
@@ -1402,7 +1402,7 @@ sbatch run_training.sh 3 50 2 2048 256 1000 0.003 1 si1000_d3_p3_ft d3_p0.001_t5
 
 | SLURM job | Status |
 |-----------|--------|
-| TBD | in progress |
+| 6107829 | in progress |
 
 ---
 
