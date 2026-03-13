@@ -22,6 +22,13 @@ class FlipType(Enum):
     BIT = 1
     PHASE = 2
 
+def _norm_coords(coords_dict: dict) -> np.ndarray:
+    """Convert DEM detector coordinate dict → normalised int64 array [n, 3]."""
+    arr = np.array([v[-3:] for v in coords_dict.values()])
+    arr -= arr.min(axis=0)
+    return arr.astype(np.int64)
+
+
 class Dataset:
     """
     Class that is used to generate graphs of errors that occur
@@ -33,7 +40,8 @@ class Dataset:
     https://github.com/quantumlib/Stim/blob/main/doc/getting_started.ipynb
     https://github.com/LangeMoritz/GNN_decoder
     """
-    def __init__(self, args: Args, flip: FlipType = FlipType.BIT):
+    def __init__(self, args: Args, flip: FlipType = FlipType.BIT, custom_dem=None,
+                 si1000_circuit_path=None):
         self.device = args.device
         self.error_rate = args.error_rate
         self.error_rates = args.error_rates if args.error_rates else [args.error_rate]
@@ -53,27 +61,38 @@ class Dataset:
             self.code_task = "surface_code:rotated_memory_x"
         else:
             raise AttributeError("Unknown flip type.")
-        self.__init_circuit()
+        self.__init_circuit(custom_dem=custom_dem, si1000_circuit_path=si1000_circuit_path)
 
-    def __init_circuit(self):
-        """Initializes circuits and samplers for all error rates."""
+    def __init_circuit(self, custom_dem=None, si1000_circuit_path=None):
+        """Initializes circuits and samplers for all error rates.
+
+        custom_dem: if provided (SI1000 mode only), replace the circuit's DEM with this
+        one for sampling.  Coordinates are always taken from the circuit's natural DEM.
+        si1000_circuit_path: if provided, load this specific circuit file instead of
+        searching _GOOGLE_CIRCUITS_DIR (only used when noise_model=="SI1000").
+        """
         self.circuits = []
         self.dem = []
         if self.noise_model == "SI1000":
-            # Load the Google hardware circuit (×3 scaled, p=0.003). All patches for a
-            # given d are structurally identical; use the first one.
-            paths = sorted(_GOOGLE_CIRCUITS_DIR.glob(
-                f"d{self.distance}_at_*/Z/r{self.t}/circuit_noisy_si1000_p3.stim"
-            ))
-            if not paths:
-                raise FileNotFoundError(
-                    f"No SI1000 circuits found for d={self.distance}, t={self.t} "
-                    f"in {_GOOGLE_CIRCUITS_DIR}"
-                )
-            circuit = stim.Circuit.from_file(str(paths[0]))
+            if si1000_circuit_path is not None:
+                circuit = stim.Circuit.from_file(str(si1000_circuit_path))
+            else:
+                # Load the Google hardware circuit (×3 scaled, p=0.003). All patches for a
+                # given d are structurally identical; use the first one.
+                paths = sorted(_GOOGLE_CIRCUITS_DIR.glob(
+                    f"d{self.distance}_at_*/Z/r{self.t}/circuit_noisy_si1000_p3.stim"
+                ))
+                if not paths:
+                    raise FileNotFoundError(
+                        f"No SI1000 circuits found for d={self.distance}, t={self.t} "
+                        f"in {_GOOGLE_CIRCUITS_DIR}"
+                    )
+                circuit = stim.Circuit.from_file(str(paths[0]))
             self.circuits.append(circuit)
-            self.dem.append(circuit.detector_error_model())
+            natural_dem = circuit.detector_error_model()
+            self.dem.append(custom_dem if custom_dem is not None else natural_dem)
             self.error_rates = [self.error_rate]
+            coord_dem = natural_dem  # always use circuit DEM for coordinates
         else:
             for er in self.error_rates:
                 circuit = stim.Circuit.generated(
@@ -87,13 +106,14 @@ class Dataset:
                 )
                 self.circuits.append(circuit)
                 self.dem.append(circuit.detector_error_model())
+            coord_dem = self.dem[0]
 
         # DEM sampler (one per error rate)
         self.samplers = [dem.compile_sampler(seed=self.seed) for dem in self.dem]
 
         # Detector coordinates are the same for all error rates (same d, t, dt).
         # Compute once from the first DEM and replicate references.
-        coordinates = self.dem[0].get_detector_coordinates()
+        coordinates = coord_dem.get_detector_coordinates()
         base_coords = np.array([v[-3:] for v in coordinates.values()])
         base_coords -= base_coords.min(axis=0)
         base_coords = base_coords.astype(np.int64)
@@ -355,8 +375,9 @@ class HierarchicalDataset:
     so they match the d=k training distribution.
     """
 
-    def __init__(self, args: Args):
-        self._full = Dataset(args)
+    def __init__(self, args: Args, custom_dem=None, si1000_circuit_path=None):
+        self._full = Dataset(args, custom_dem=custom_dem,
+                             si1000_circuit_path=si1000_circuit_path)
         self.batch_size = args.batch_size
         self._setup_patches()
 
@@ -582,8 +603,8 @@ class TwoLevelHierarchicalDataset(HierarchicalDataset):
     are then split at their midpoint into 4 inner d=3 sub-patches.
     """
 
-    def __init__(self, args: Args):
-        super().__init__(args)   # builds self._full (d=9), self.patch_indices, self._patch_coords, etc.
+    def __init__(self, args: Args, custom_dem=None):
+        super().__init__(args, custom_dem=custom_dem)   # builds self._full (d=9), self.patch_indices, self._patch_coords, etc.
         self._setup_sub_patches()
 
     def _setup_sub_patches(self):
@@ -962,8 +983,8 @@ class ThreeLevelHierarchicalDataset(TwoLevelHierarchicalDataset):
     outer order [TL, TR, BL, BR] at all three levels.
     """
 
-    def __init__(self, args: Args):
-        super().__init__(args)   # builds d=17 circuit + 4×4 two-level patches
+    def __init__(self, args: Args, custom_dem=None):
+        super().__init__(args, custom_dem=custom_dem)   # builds d=17 circuit + 4×4 two-level patches
         self._setup_sub_sub_patches()
 
     def _setup_sub_sub_patches(self):
@@ -1192,6 +1213,443 @@ def find_optimal_batch_size(args: Args, model, candidates=None):
     print(f"{'='*60}\n")
     return best_bs
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google experimental data datasets
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Round counts available in the Google 105Q dataset.
+GOOGLE_T_LIST = [1, 10, 13, 30, 50, 70, 90, 110, 130, 150, 170, 190, 210, 230, 250]
+
+
+def _load_google_round(r_dir: Path, circuit_filename: str = "circuit_noisy_si1000.stim"):
+    """Load detection events, obs flips, and circuit metadata for one round count.
+
+    Returns a dict with keys:
+        det_events  [n_valid, n_det] bool
+        obs_flips   [n_valid, 1]    int32
+        coords      [n_det, 3]      int64   (normalised)
+        sampler_t   int             (max time index = rounds - 1)
+        n_shots     int
+    """
+    circuit = stim.Circuit.from_file(str(r_dir / circuit_filename))
+    dem = circuit.detector_error_model()
+    coords = _norm_coords(dem.get_detector_coordinates())
+    sampler_t = int(coords[:, -1].max())
+
+    det_events = np.asarray(stim.read_shot_data_file(
+        path=str(r_dir / "detection_events.b8"),
+        format="b8", bit_packed=False,
+        num_measurements=circuit.num_detectors,
+    ), dtype=bool)
+    obs_flips = np.asarray(stim.read_shot_data_file(
+        path=str(r_dir / "obs_flips_actual.b8"),
+        format="b8", bit_packed=False,
+        num_measurements=circuit.num_observables,
+    ), dtype=np.int32)
+
+    valid = np.any(det_events, axis=1)
+    return {
+        "det_events": det_events[valid],
+        "obs_flips": obs_flips[valid, :1],
+        "coords": coords,
+        "sampler_t": sampler_t,
+        "n_shots": int(valid.sum()),
+    }
+
+
+class GoogleDataset:
+    """Loads pre-recorded Google experimental detection events for a single d=3 patch.
+
+    On each generate_batch() call, randomly picks a round count from t_list and
+    samples batch_size real shots (with replacement). Returns the same 6-tuple as
+    Dataset.generate_batch(): (node_features, edge_index, labels, label_map,
+    edge_attr, last_label).
+
+    Args:
+        patch_dir : path to e.g. .../d3_at_q2_7/
+        basis     : "Z" or "X"
+        t_list    : list of round counts to include (subset of GOOGLE_T_LIST)
+        dt        : sliding window width (must match the base model's dt)
+        batch_size: shots per batch
+        device    : torch device
+        seed      : numpy RNG seed
+    """
+
+    def __init__(self, patch_dir, basis: str, t_list: list, dt: int,
+                 batch_size: int, device, seed: int = 0):
+        self.dt = dt
+        self.batch_size = batch_size
+        self.device = device
+        self.rng = np.random.default_rng(seed)
+        self._local_pairs: dict = {}
+        self._rounds: dict = {}
+
+        patch_dir = Path(patch_dir)
+
+        # Precompute edge weight table from r50 spatial layout (same for all rounds)
+        r50_data = _load_google_round(patch_dir / basis / "r50")
+        self._precompute_edge_weights(r50_data["coords"], dt)
+
+        for t in t_list:
+            r_dir = patch_dir / basis / f"r{t:02d}"
+            self._rounds[t] = _load_google_round(r_dir)
+
+        self.t_list = list(self._rounds.keys())
+
+    def _precompute_edge_weights(self, coords: np.ndarray, dt: int):
+        unique_xy = np.unique(coords[:, :2], axis=0)
+        chunk_pos = np.array(
+            [(x, y, tl) for x, y in unique_xy for tl in range(dt)], dtype=np.int64
+        )
+        diff = chunk_pos[:, None, :] - chunk_pos[None, :, :]
+        dist = np.abs(diff).max(axis=2).astype(np.float32)
+        with np.errstate(divide='ignore'):
+            self._edge_weights = np.where(dist > 0, 1.0 / dist**2, 0.0).astype(np.float32)
+        max_x, max_y = int(unique_xy[:, 0].max()), int(unique_xy[:, 1].max())
+        self._pos_idx = np.full((max_x + 1, max_y + 1, dt), -1, dtype=np.int64)
+        for i, (x, y, tl) in enumerate(chunk_pos):
+            self._pos_idx[x, y, tl] = i
+
+    def generate_batch(self, t: int = None) -> tuple:
+        if t is None:
+            t = self.rng.choice(self.t_list)
+        rd = self._rounds[t]
+
+        idx = self.rng.integers(0, rd["n_shots"], size=self.batch_size)
+        syndromes = rd["det_events"][idx]   # [B, n_det] bool
+        label_data = rd["obs_flips"][idx]   # [B, 1]
+        last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
+
+        coords = rd["coords"]
+        sampler_t = rd["sampler_t"]
+        node_features_list = [coords[s] for s in syndromes]
+
+        node_features_list, chunk_labels = self._get_sliding_window(
+            node_features_list, sampler_t
+        )
+
+        batch_labels = np.repeat(
+            np.arange(self.batch_size), [len(f) for f in node_features_list]
+        )
+        coords_int = np.vstack(node_features_list)
+        node_features_float = coords_int.astype(np.float32)
+
+        g_max = sampler_t - self.dt + 2
+        combined = batch_labels.astype(np.int64) * g_max + chunk_labels.astype(np.int64)
+        change = np.empty(len(combined), dtype=bool)
+        change[0] = True
+        change[1:] = combined[1:] != combined[:-1]
+        group_starts = np.flatnonzero(change)
+        group_sizes = np.diff(np.append(group_starts, len(combined)))
+
+        label_map = np.column_stack([batch_labels[group_starts], chunk_labels[group_starts]])
+        labels = np.repeat(np.arange(len(group_starts), dtype=np.int64), group_sizes)
+
+        edge_index, edge_attr = self._compute_fc_edges(coords_int, group_starts, group_sizes)
+
+        return (
+            torch.from_numpy(node_features_float).to(self.device),
+            edge_index.to(self.device),
+            torch.from_numpy(labels).to(self.device),
+            torch.from_numpy(label_map).to(dtype=torch.long, device=self.device),
+            edge_attr.to(self.device),
+            last_label,
+        )
+
+    def _get_sliding_window(self, node_features: list, sampler_t: int):
+        chunk_labels = [None] * len(node_features)
+        for i, coordinates in enumerate(node_features):
+            times, counts = np.unique(coordinates[:, -1], return_counts=True)
+            start = times < self.dt
+            end = times > sampler_t - self.dt
+            middle = ~(start | end)
+            counts = counts.copy()
+            counts[start] *= (times + 1)[start]
+            counts[middle] *= self.dt
+            counts[end] *= -((times - 1) - sampler_t)[end]
+            new_size = int(np.sum(counts))
+
+            new_coordinates = np.zeros((new_size, 3), dtype=np.uint64)
+            chunk_label = np.zeros(new_size, dtype=np.uint64)
+
+            j_values = np.arange(sampler_t - self.dt + 2)[:, None]
+            time_column = coordinates[:, -1][None, :]
+            mask = (time_column < j_values + self.dt) & (time_column >= j_values)
+
+            indices = np.where(mask)
+            sorted_idx = np.argsort(indices[0])
+            selected_points = coordinates[indices[1][sorted_idx]].copy()
+            selected_points[:, -1] -= indices[0][sorted_idx]
+
+            n = len(selected_points)
+            new_coordinates[:n] = selected_points
+            chunk_label[:n] = indices[0][sorted_idx]
+
+            node_features[i] = new_coordinates
+            chunk_labels[i] = chunk_label
+
+        return node_features, np.concatenate(chunk_labels)
+
+    def _compute_fc_edges(self, coords_int, group_starts, group_sizes):
+        src_list, tgt_list, w_list = [], [], []
+        unique_sizes, size_inv = np.unique(group_sizes, return_inverse=True)
+        for ui, s in enumerate(unique_sizes):
+            if s <= 1:
+                continue
+            starts = group_starts[size_inv == ui]
+            if s not in self._local_pairs:
+                sl, tl = np.where(~np.eye(s, dtype=bool))
+                self._local_pairs[s] = (sl, tl)
+            src_l, tgt_l = self._local_pairs[s]
+            gsrc = (starts[:, None] + src_l[None, :]).ravel()
+            gtgt = (starts[:, None] + tgt_l[None, :]).ravel()
+            sc = coords_int[gsrc]
+            tc = coords_int[gtgt]
+            ps = self._pos_idx[sc[:, 0], sc[:, 1], sc[:, 2]]
+            pt = self._pos_idx[tc[:, 0], tc[:, 1], tc[:, 2]]
+            valid = (ps >= 0) & (pt >= 0)
+            src_list.append(gsrc[valid])
+            tgt_list.append(gtgt[valid])
+            w_list.append(self._edge_weights[ps[valid], pt[valid]])
+        if src_list:
+            ei = torch.from_numpy(
+                np.stack([np.concatenate(src_list), np.concatenate(tgt_list)]).astype(np.int64)
+            )
+            ea = torch.from_numpy(np.concatenate(w_list))
+        else:
+            ei = torch.zeros((2, 0), dtype=torch.long)
+            ea = torch.zeros(0, dtype=torch.float32)
+        return ei, ea
+
+
+class _FullDataMock:
+    """Minimal stand-in for HierarchicalDataset._full used by _build_patch_batch."""
+
+    def __init__(self, dt: int, device):
+        self.dt = dt
+        self.device = device
+
+
+def _setup_patches_from_coords(coords: np.ndarray, x_mid: float, y_mid: float, dt: int):
+    """Compute 4-patch split from detector coordinates and midpoints.
+
+    Returns (patch_indices, patch_coords, patch_pos_idx, patch_ew) as lists of 4.
+    """
+    x, y = coords[:, 0], coords[:, 1]
+    patch_masks = [
+        (x <= x_mid + 1) & (y <= y_mid + 1),  # TL
+        (x >= x_mid - 1) & (y <= y_mid + 1),  # TR
+        (x <= x_mid + 1) & (y >= y_mid - 1),  # BL
+        (x >= x_mid - 1) & (y >= y_mid - 1),  # BR
+    ]
+    patch_indices, patch_coords, patch_pos_idx, patch_ew = [], [], [], []
+    for mask in patch_masks:
+        idx = np.where(mask)[0]
+        pc = coords[mask].copy()
+        pc[:, :2] -= pc[:, :2].min(axis=0)
+
+        unique_xy = np.unique(pc[:, :2], axis=0)
+        chunk_pos = np.array(
+            [(xi, yi, tl) for xi, yi in unique_xy for tl in range(dt)], dtype=np.int64
+        )
+        diff = chunk_pos[:, None, :] - chunk_pos[None, :, :]
+        dist = np.abs(diff).max(axis=2).astype(np.float32)
+        with np.errstate(divide='ignore'):
+            ew = np.where(dist > 0, 1.0 / dist**2, 0.0).astype(np.float32)
+        mx, my = int(unique_xy[:, 0].max()), int(unique_xy[:, 1].max())
+        pos_idx = np.full((mx + 1, my + 1, dt), -1, dtype=np.int64)
+        for i, (xi, yi, tl) in enumerate(chunk_pos):
+            pos_idx[xi, yi, tl] = i
+
+        patch_indices.append(idx)
+        patch_coords.append(pc)
+        patch_pos_idx.append(pos_idx)
+        patch_ew.append(ew)
+    return patch_indices, patch_coords, patch_pos_idx, patch_ew
+
+
+def _setup_3x3_patches_from_coords(coords: np.ndarray, dt: int):
+    """Compute 9-patch (3×3) split from detector coordinates.
+
+    Returns (patch_indices, patch_coords, patch_pos_idx, patch_ew) as lists of 9.
+    """
+    x, y = coords[:, 0], coords[:, 1]
+    x_min, x_max = int(x.min()), int(x.max())
+    y_min, y_max = int(y.min()), int(y.max())
+    x_step = (x_max - x_min - 6) // 2
+    y_step = (y_max - y_min - 6) // 2
+    x_cuts = [x_min + (k + 1) * x_step + 1 for k in range(2)]
+    y_cuts = [y_min + (k + 1) * y_step + 1 for k in range(2)]
+
+    patch_indices, patch_coords, patch_pos_idx, patch_ew = [], [], [], []
+    for yc_lo, yc_hi in _three_bounds(y_cuts):
+        for xc_lo, xc_hi in _three_bounds(x_cuts):
+            mask = np.ones(len(x), dtype=bool)
+            if xc_lo is not None:
+                mask &= (x >= xc_lo)
+            if xc_hi is not None:
+                mask &= (x <= xc_hi)
+            if yc_lo is not None:
+                mask &= (y >= yc_lo)
+            if yc_hi is not None:
+                mask &= (y <= yc_hi)
+
+            idx = np.where(mask)[0]
+            pc = coords[mask].copy()
+            pc[:, :2] -= pc[:, :2].min(axis=0)
+
+            unique_xy = np.unique(pc[:, :2], axis=0)
+            chunk_pos = np.array(
+                [(xi, yi, tl) for xi, yi in unique_xy for tl in range(dt)], dtype=np.int64
+            )
+            diff = chunk_pos[:, None, :] - chunk_pos[None, :, :]
+            dist = np.abs(diff).max(axis=2).astype(np.float32)
+            with np.errstate(divide='ignore'):
+                ew = np.where(dist > 0, 1.0 / dist**2, 0.0).astype(np.float32)
+            mx, my = int(unique_xy[:, 0].max()), int(unique_xy[:, 1].max())
+            pos_idx = np.full((mx + 1, my + 1, dt), -1, dtype=np.int64)
+            for i, (xi, yi, tl) in enumerate(chunk_pos):
+                pos_idx[xi, yi, tl] = i
+
+            patch_indices.append(idx)
+            patch_coords.append(pc)
+            patch_pos_idx.append(pos_idx)
+            patch_ew.append(ew)
+    return patch_indices, patch_coords, patch_pos_idx, patch_ew
+
+
+class GoogleHierarchicalDataset(HierarchicalDataset):
+    """Loads real d=5 Google experimental detection events for Stage 2 fine-tuning.
+
+    Applies the same 4-patch (2×2) split as HierarchicalDataset but samples from
+    pre-recorded b8 files instead of the stim DEM.  The patch geometry is derived
+    from the r50 circuit (same spatial layout for all round counts).
+
+    generate_batch() returns the same (patch_batches, last_label, g_max) tuple
+    as HierarchicalDataset.generate_batch().
+    """
+
+    def __init__(self, patch_dir, basis: str, t_list: list, dt: int,
+                 batch_size: int, device, seed: int = 0):
+        # Skip HierarchicalDataset.__init__ — build everything manually so we
+        # don't waste time sampling from the stim DEM.
+        self._full = _FullDataMock(dt, device)
+        self.batch_size = batch_size
+        self.dt = dt
+        self.device = device
+        self.rng = np.random.default_rng(seed)
+        self._patch_local_pairs: list = [{} for _ in range(4)]
+        self._rounds: dict = {}
+
+        patch_dir = Path(patch_dir)
+
+        # Spatial midpoints from r50 (same for all round counts — same chip geometry)
+        r50_data = _load_google_round(patch_dir / basis / "r50")
+        r50_coords = r50_data["coords"]
+        x, y = r50_coords[:, 0], r50_coords[:, 1]
+        self._x_mid = (int(x.min()) + int(x.max())) / 2
+        self._y_mid = (int(y.min()) + int(y.max())) / 2
+
+        for t in t_list:
+            r_dir = patch_dir / basis / f"r{t:02d}"
+            rd = _load_google_round(r_dir)
+            pi, pc, pp, pe = _setup_patches_from_coords(
+                rd["coords"], self._x_mid, self._y_mid, dt
+            )
+            rd["patch_indices"] = pi
+            rd["patch_coords"] = pc
+            rd["patch_pos_idx"] = pp
+            rd["patch_ew"] = pe
+            self._rounds[t] = rd
+
+        self.t_list = list(self._rounds.keys())
+
+    def generate_batch(self, t: int = None) -> tuple:
+        if t is None:
+            t = self.rng.choice(self.t_list)
+        rd = self._rounds[t]
+
+        idx = self.rng.integers(0, rd["n_shots"], size=self.batch_size)
+        syndromes = rd["det_events"][idx]
+        label_data = rd["obs_flips"][idx]
+        last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
+        sampler_t = rd["sampler_t"]
+
+        def _build(p):
+            return self._build_patch_batch(
+                syndromes[:, rd["patch_indices"][p]],
+                rd["patch_coords"][p],
+                rd["patch_pos_idx"][p],
+                rd["patch_ew"][p],
+                self._patch_local_pairs[p],
+                sampler_t,
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            patch_batches = list(executor.map(_build, range(4)))
+        return patch_batches, last_label, sampler_t - self.dt + 2
+
+
+class GoogleThreeByThreeDataset(ThreeByThreeHierarchicalDataset):
+    """Loads real d=7 Google experimental detection events for Stage 2 fine-tuning.
+
+    Applies the same 9-patch (3×3) split as ThreeByThreeHierarchicalDataset but
+    samples from pre-recorded b8 files.
+
+    generate_batch() returns the same (patch_batches, last_label, g_max) tuple
+    as ThreeByThreeHierarchicalDataset.generate_batch().
+    """
+
+    def __init__(self, patch_dir, basis: str, t_list: list, dt: int,
+                 batch_size: int, device, seed: int = 0):
+        # Skip ThreeByThreeHierarchicalDataset.__init__ — build everything manually.
+        self._full = _FullDataMock(dt, device)
+        self.batch_size = batch_size
+        self.dt = dt
+        self.device = device
+        self.rng = np.random.default_rng(seed)
+        self._patch_local_pairs: list = [{} for _ in range(9)]
+        self._rounds: dict = {}
+
+        patch_dir = Path(patch_dir)
+
+        for t in t_list:
+            r_dir = patch_dir / basis / f"r{t:02d}"
+            rd = _load_google_round(r_dir)
+            pi, pc, pp, pe = _setup_3x3_patches_from_coords(rd["coords"], dt)
+            rd["patch_indices"] = pi
+            rd["patch_coords"] = pc
+            rd["patch_pos_idx"] = pp
+            rd["patch_ew"] = pe
+            self._rounds[t] = rd
+
+        self.t_list = list(self._rounds.keys())
+
+    def generate_batch(self, t: int = None) -> tuple:
+        if t is None:
+            t = self.rng.choice(self.t_list)
+        rd = self._rounds[t]
+
+        idx = self.rng.integers(0, rd["n_shots"], size=self.batch_size)
+        syndromes = rd["det_events"][idx]
+        label_data = rd["obs_flips"][idx]
+        last_label = torch.from_numpy(label_data).to(dtype=torch.float32, device=self.device)
+        sampler_t = rd["sampler_t"]
+
+        def _build(p):
+            return self._build_patch_batch(
+                syndromes[:, rd["patch_indices"][p]],
+                rd["patch_coords"][p],
+                rd["patch_pos_idx"][p],
+                rd["patch_ew"][p],
+                self._patch_local_pairs[p],
+                sampler_t,
+            )
+
+        with ThreadPoolExecutor(max_workers=9) as executor:
+            patch_batches = list(executor.map(_build, range(9)))
+        return patch_batches, last_label, sampler_t - self.dt + 2
 
 def find_optimal_batch_size_hierarchical(args: Args, meta_model, candidates=None, DatasetCls=None):
     """Find training batch size with best throughput for the hierarchical model.
