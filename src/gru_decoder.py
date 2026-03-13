@@ -178,7 +178,7 @@ class GRUDecoder(nn.Module):
         epoch_offset = len(prior_history)
         schedule = lambda epoch: max(0.95 ** (epoch + epoch_offset), self.args.min_lr / self.args.lr)
         scheduler = LambdaLR(optim, lr_lambda=schedule)
-        best_accuracy = max((h["accuracy"] for h in prior_history), default=0)
+        best_accuracy = 0  # always start fresh so fine-tuning at different settings still saves
 
         # Set up prefetcher or direct dataset
         use_prefetch = self.args.prefetch
